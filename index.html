@@ -417,7 +417,7 @@ function HomeTab({ expenses, settings, members, currentRate, refreshRate, refres
   const rateTime = currentRate ? new Date(currentRate.timestamp).toLocaleString('zh-HK', { hour: '2-digit', minute: '2-digit' }) : '—';
 
   return (
-    <div className="px-5 safe-top pt-4 pb-4 space-y-5">
+    <div className="px-5 safe-top pt-16 pb-4 space-y-5">
       <div className="flex justify-between items-start">
         <div>
           <div className="text-xs text-zinc-500 uppercase tracking-widest mb-1">Trip · Day {dayNum} / {settings.totalDays}</div>
@@ -517,7 +517,7 @@ function RecordsTab({ expenses, upsertExpense, deleteExpense, members, settings,
   const handleDelete = (id) => { if (confirm('確定刪除？')) deleteExpense(id); };
 
   return (
-    <div className="px-5 safe-top pt-4 pb-4 space-y-4">
+    <div className="px-5 safe-top pt-16 pb-4 space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold text-white">所有消費</h1>
@@ -770,7 +770,7 @@ function ScanTab({ addMultipleExpenses, members, settings, onDone }) {
   const totalResult = result?.items.reduce((s, i) => s + i.price, 0) || 0;
 
   return (
-    <div className="px-5 safe-top pt-4 pb-4 space-y-4">
+    <div className="px-5 safe-top pt-16 pb-4 space-y-4">
       <div>
         <h1 className="text-3xl font-bold text-white">掃描收據</h1>
         <p className="text-xs text-zinc-500 mt-1">AI 拆分每件商品，分別指派俾唔同嘅人</p>
@@ -909,7 +909,7 @@ function StatsTab({ expenses, settings, members, currentRate }) {
   const top10 = [...expenses].sort((a, b) => b.amount - a.amount).slice(0, 10);
 
   return (
-    <div className="px-5 safe-top pt-4 pb-4 space-y-4">
+    <div className="px-5 safe-top pt-16 pb-4 space-y-4">
       <h1 className="text-3xl font-bold text-white">統計</h1>
       <div className="bg-gradient-to-br from-orange-500 to-orange-700 rounded-3xl p-5 shadow-lg shadow-orange-500/20">
         <div className="text-white/80 text-xs uppercase tracking-wider">旅程總支出</div>
@@ -1016,7 +1016,7 @@ function SettingsTab({ settings, saveSettings, members, upsertMember, deleteMemb
   const toCur = CURRENCIES.find(c => c.code === settings.toCurrency);
 
   return (
-    <div className="px-5 safe-top pt-4 pb-4 space-y-4">
+    <div className="px-5 safe-top pt-16 pb-4 space-y-4">
       <h1 className="text-3xl font-bold text-white">設定</h1>
 
       <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4 space-y-3">
