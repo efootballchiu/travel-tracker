@@ -1,2 +1,0 @@
-# travel-tracker
-travel-tracker
