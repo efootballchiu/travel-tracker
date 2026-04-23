@@ -144,6 +144,14 @@ function identityStorageKey(tripId) {
   return `${IDENTITY_STORAGE_PREFIX}${tripId}`;
 }
 
+function toTzDateString(date, timeZone) {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+  } catch (e) {
+    return date.toISOString().split('T')[0];
+  }
+}
+
 // ========== 匯率 ==========
 async function fetchExchangeRate(from, to) {
   if (!from || !to) return null;
@@ -258,6 +266,8 @@ function App() {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [currentUserId, setCurrentUserId] = useState(() => localStorage.getItem(identityStorageKey(parseTripIdFromHash())) || '');
   const [currentRate, setCurrentRate] = useState(null);
+  const [activityLogs, setActivityLogs] = useState([]);
+  const [comments, setComments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [online, setOnline] = useState(navigator.onLine);
@@ -299,6 +309,8 @@ function App() {
     const tripsRef = collection(db, 'trips');
     const expensesRef = collection(db, 'trips', tripId, 'expenses');
     const membersRef = collection(db, 'trips', tripId, 'members');
+    const logsRef = collection(db, 'trips', tripId, 'activityLogs');
+    const commentsRef = collection(db, 'trips', tripId, 'comments');
     const settingsDocRef = doc(db, 'trips', tripId, 'meta', 'settings');
 
     let loaded = 0;
@@ -330,8 +342,20 @@ function App() {
       if (snap.exists()) setSettings({ ...DEFAULT_SETTINGS, ...snap.data() });
       if (loaded < 3) check();
     }, (err) => { console.error(err); if (loaded < 3) check(); });
+    const u4 = onSnapshot(logsRef, (snap) => {
+      const list = [];
+      snap.forEach(d => list.push({ id: d.id, ...d.data() }));
+      list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      setActivityLogs(list.slice(0, 200));
+    });
+    const u5 = onSnapshot(commentsRef, (snap) => {
+      const list = [];
+      snap.forEach(d => list.push({ id: d.id, ...d.data() }));
+      list.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+      setComments(list);
+    });
 
-    return () => { u0(); u1(); u2(); u3(); };
+    return () => { u0(); u1(); u2(); u3(); u4(); u5(); };
   }, [fbReady, tripId]);
 
   useEffect(() => {
@@ -381,13 +405,28 @@ function App() {
       updatedBy: currentUserId || expense.updatedBy || '',
     };
     delete data.id;
-    try { await setDoc(doc(expensesRef, id), data); } catch (e) { alert('儲存失敗：' + e.message); }
+    try {
+      await setDoc(doc(expensesRef, id), data);
+      await addActivity(expense.id ? 'expense.update' : 'expense.create', `${expense.id ? '修改' : '新增'}消費：${data.name}`, { expenseId: id, amount: data.amount });
+    } catch (e) { alert('儲存失敗：' + e.message); }
   };
   const deleteExpense = async (id) => {
     if (!canEditExpense) return alert('你目前是 Viewer，無法刪除');
-    const { db, doc, deleteDoc, collection } = window.__firebase;
+    const { db, doc, setDoc, collection } = window.__firebase;
     const expensesRef = collection(db, 'trips', tripId, 'expenses');
-    try { await deleteDoc(doc(expensesRef, id)); } catch (e) {}
+    try {
+      await setDoc(doc(expensesRef, id), { deletedAt: Date.now(), deletedBy: currentUserId || '', updatedAt: Date.now(), updatedBy: currentUserId || '' }, { merge: true });
+      await addActivity('expense.soft_delete', '刪除咗一筆消費', { expenseId: id });
+    } catch (e) {}
+  };
+  const restoreExpense = async (id) => {
+    if (!canEditExpense) return alert('你目前是 Viewer，無法還原');
+    const { db, doc, setDoc, collection } = window.__firebase;
+    const expensesRef = collection(db, 'trips', tripId, 'expenses');
+    try {
+      await setDoc(doc(expensesRef, id), { deletedAt: null, deletedBy: null, updatedAt: Date.now(), updatedBy: currentUserId || '' }, { merge: true });
+      await addActivity('expense.restore', '還原咗一筆消費', { expenseId: id });
+    } catch (e) {}
   };
   const addMultipleExpenses = async (items) => {
     if (!canEditExpense) return alert('你目前是 Viewer，無法新增');
@@ -402,6 +441,7 @@ function App() {
           ...data, createdAt: Date.now(), updatedAt: Date.now(), createdBy: currentUserId || '', updatedBy: currentUserId || ''
         });
       }));
+      await addActivity('expense.batch_create', `批次新增 ${items.length} 筆消費`);
     } catch (e) { alert('儲存失敗：' + e.message); }
   };
   const upsertMember = async (member) => {
@@ -412,13 +452,16 @@ function App() {
     const hasAdmin = members.some(m => m.role === 'admin');
     const data = { role: (!hasAdmin && !member.id) ? 'admin' : 'editor', ...member, createdAt: member.createdAt || Date.now(), updatedAt: Date.now() };
     delete data.id;
-    try { await setDoc(doc(membersRef, id), data); } catch (e) { alert(e.message); }
+    try {
+      await setDoc(doc(membersRef, id), data);
+      await addActivity(member.id ? 'member.update' : 'member.create', `${member.id ? '更新' : '新增'}旅伴：${data.name}`, { memberTargetId: id, role: data.role });
+    } catch (e) { alert(e.message); }
   };
   const deleteMember = async (id) => {
     if (!canManageMembers) return alert('只有 Admin 可以管理旅伴');
     const { db, doc, deleteDoc, collection } = window.__firebase;
     const membersRef = collection(db, 'trips', tripId, 'members');
-    try { await deleteDoc(doc(membersRef, id)); } catch (e) {}
+    try { await deleteDoc(doc(membersRef, id)); await addActivity('member.delete', '刪除旅伴', { memberTargetId: id }); } catch (e) {}
   };
   const saveSettings = async (next) => {
     if (!canManageTrip) return alert('只有 Admin 可以修改旅程設定');
@@ -428,6 +471,7 @@ function App() {
     try {
       await setDoc(ref, { ...next, updatedAt: Date.now() });
       await setDoc(tripRef, { tripName: next.tripName || tripId, archived: !!next.archived, updatedAt: Date.now(), settlementTimezone: next.settlementTimezone || 'Asia/Tokyo' }, { merge: true });
+      await addActivity('trip.settings', '更新旅程設定');
     } catch (e) {}
   };
 
@@ -437,6 +481,75 @@ function App() {
   const canEditExpense = canBootstrap || currentRole === 'admin' || currentRole === 'editor';
   const canManageMembers = canBootstrap || currentRole === 'admin';
   const canManageTrip = canBootstrap || currentRole === 'admin';
+
+  useEffect(() => {
+    if (!fbReady || loading) return;
+    const run = async () => {
+      const { db, doc, setDoc, getDoc } = window.__firebase;
+      const tz = settings.settlementTimezone || 'Asia/Tokyo';
+      const todayKey = toTzDateString(new Date(), tz);
+      const settingsRef = doc(db, 'trips', tripId, 'meta', 'settings');
+      const sSnap = await getDoc(settingsRef);
+      const lastSnapDate = sSnap.exists() ? sSnap.data()?.lastSnapshotDate : null;
+      let cursor = lastSnapDate ? new Date(`${lastSnapDate}T00:00:00`) : new Date(new Date(settings.startDate || todayKey).toISOString().split('T')[0] + 'T00:00:00');
+      const end = new Date(`${todayKey}T00:00:00`);
+      let loops = 0;
+      while (cursor <= end && loops < 400) {
+        const key = cursor.toISOString().split('T')[0];
+        const snapRef = doc(db, 'trips', tripId, 'snapshots', key);
+        const exists = await getDoc(snapRef);
+        if (!exists.exists()) {
+          const cutoff = new Date(`${key}T23:59:59.999`);
+          const cutoffTs = cutoff.getTime();
+          const eligible = expenses.filter(e => !e.deletedAt && (e.createdAt || 0) <= cutoffTs);
+          const total = eligible.reduce((s, e) => s + Number(e.amount || 0), 0);
+          await setDoc(snapRef, {
+            date: key,
+            timezone: tz,
+            expenseCount: eligible.length,
+            totalAmount: total,
+            createdAt: Date.now(),
+            immutable: true,
+          });
+        }
+        cursor.setDate(cursor.getDate() + 1);
+        loops++;
+      }
+      await setDoc(settingsRef, { ...settings, lastSnapshotDate: todayKey, updatedAt: Date.now() }, { merge: true });
+    };
+    run();
+  }, [fbReady, loading, tripId, settings.startDate, settings.settlementTimezone, expenses.length]);
+
+  const addActivity = async (action, detail, extra = {}) => {
+    const { db, doc, setDoc, collection } = window.__firebase;
+    const logsRef = collection(db, 'trips', tripId, 'activityLogs');
+    const id = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    await setDoc(doc(logsRef, id), {
+      action,
+      detail,
+      createdAt: Date.now(),
+      memberId: currentUserId || '',
+      memberName: currentUser?.name || 'Unknown',
+      color: currentUser?.color || '#FF8C00',
+      ...extra,
+    });
+  };
+
+  const addComment = async (text) => {
+    const content = (text || '').trim();
+    if (!content) return;
+    const { db, doc, setDoc, collection } = window.__firebase;
+    const commentsRef = collection(db, 'trips', tripId, 'comments');
+    const id = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    await setDoc(doc(commentsRef, id), {
+      text: content,
+      createdAt: Date.now(),
+      memberId: currentUserId || '',
+      memberName: currentUser?.name || 'Unknown',
+      color: currentUser?.color || '#FF8C00',
+    });
+    await addActivity('comment.create', '新增留言');
+  };
 
   const selectIdentity = async (memberId) => {
     const { db, doc, setDoc, collection } = window.__firebase;
@@ -478,9 +591,9 @@ function App() {
 
   const ctx = {
     tripId, trips, currentUser, currentRole, canEditExpense, canManageMembers, canManageTrip,
-    expenses, members, settings, currentRate, refreshing, online,
-    upsertExpense, deleteExpense, addMultipleExpenses,
-    upsertMember, deleteMember, saveSettings, refreshRate, createTrip, setTripHash,
+    expenses, members, settings, currentRate, refreshing, online, activityLogs, comments,
+    upsertExpense, deleteExpense, restoreExpense, addMultipleExpenses,
+    upsertMember, deleteMember, saveSettings, refreshRate, createTrip, setTripHash, addComment,
   };
 
   return (
@@ -569,12 +682,13 @@ function ExpenseCard({ expense, members, settings, currentRate, onClick }) {
 // ========== HomeTab ==========
 function HomeTab({ expenses, settings, members, currentRate, refreshRate, refreshing, online, setTab }) {
   const today = new Date().toISOString().split('T')[0];
-  const todayExpenses = expenses.filter(e => e.date === today);
+  const activeExpenses = expenses.filter(e => !e.deletedAt);
+  const todayExpenses = activeExpenses.filter(e => e.date === today);
   const todayTotal = todayExpenses.reduce((s, e) => s + e.amount, 0);
-  const totalAll = expenses.reduce((s, e) => s + e.amount, 0);
+  const totalAll = activeExpenses.reduce((s, e) => s + e.amount, 0);
   const startDate = new Date(settings.startDate);
   const dayNum = Math.max(1, Math.floor((new Date() - startDate) / (1000 * 60 * 60 * 24)) + 1);
-  const balances = calculateBalances(expenses, members);
+  const balances = calculateBalances(activeExpenses, members);
   const transfers = simplifyTransfers(balances);
   const rateTime = currentRate ? new Date(currentRate.timestamp).toLocaleString('zh-HK', { hour: '2-digit', minute: '2-digit' }) : '—';
 
@@ -663,18 +777,20 @@ function HomeTab({ expenses, settings, members, currentRate, refreshRate, refres
 }
 
 // ========== RecordsTab ==========
-function RecordsTab({ expenses, upsertExpense, deleteExpense, members, settings, currentRate, canEditExpense }) {
+function RecordsTab({ expenses, upsertExpense, deleteExpense, restoreExpense, members, settings, currentRate, canEditExpense }) {
   const [view, setView] = useState('date');
   const [showAdd, setShowAdd] = useState(false);
   const [editExpense, setEditExpense] = useState(null);
-  const total = expenses.reduce((s, e) => s + e.amount, 0);
+  const [showDeleted, setShowDeleted] = useState(false);
+  const visibleExpenses = showDeleted ? expenses.filter(e => !!e.deletedAt) : expenses.filter(e => !e.deletedAt);
+  const total = visibleExpenses.reduce((s, e) => s + e.amount, 0);
 
   const grouped = {};
-  expenses.forEach(e => { if (!grouped[e.date]) grouped[e.date] = []; grouped[e.date].push(e); });
+  visibleExpenses.forEach(e => { if (!grouped[e.date]) grouped[e.date] = []; grouped[e.date].push(e); });
   const sortedDates = Object.keys(grouped).sort().reverse();
 
   const byCategory = {};
-  expenses.forEach(e => { if (!byCategory[e.category]) byCategory[e.category] = { items: [], total: 0 }; byCategory[e.category].items.push(e); byCategory[e.category].total += e.amount; });
+  visibleExpenses.forEach(e => { if (!byCategory[e.category]) byCategory[e.category] = { items: [], total: 0 }; byCategory[e.category].items.push(e); byCategory[e.category].total += e.amount; });
 
   const handleDelete = (id) => { if (confirm('確定刪除？')) deleteExpense(id); };
 
@@ -683,9 +799,12 @@ function RecordsTab({ expenses, upsertExpense, deleteExpense, members, settings,
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold text-white">所有消費</h1>
-          <p className="text-xs text-zinc-500 mt-1">{expenses.length} 筆 · {formatMoney(total, settings.fromCurrency)} · ≈ {formatMoney(convert(total, currentRate), settings.toCurrency)}</p>
+          <p className="text-xs text-zinc-500 mt-1">{visibleExpenses.length} 筆 · {formatMoney(total, settings.fromCurrency)} · ≈ {formatMoney(convert(total, currentRate), settings.toCurrency)}</p>
         </div>
-        <button disabled={!canEditExpense} onClick={() => canEditExpense && setShowAdd(true)} className={`w-11 h-11 text-white rounded-full flex items-center justify-center shadow-lg ${canEditExpense ? 'bg-gradient-to-br from-orange-400 to-orange-600 shadow-orange-500/20' : 'bg-zinc-800 text-zinc-500'}`}><IconPlus className="w-5 h-5" /></button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowDeleted(s => !s)} className={`px-2.5 py-2 rounded-xl text-xs ${showDeleted ? 'bg-amber-500/20 text-amber-300' : 'bg-zinc-900 text-zinc-400'}`}>{showDeleted ? '返回記錄' : '回收桶'}</button>
+          <button disabled={!canEditExpense || showDeleted} onClick={() => canEditExpense && setShowAdd(true)} className={`w-11 h-11 text-white rounded-full flex items-center justify-center shadow-lg ${canEditExpense && !showDeleted ? 'bg-gradient-to-br from-orange-400 to-orange-600 shadow-orange-500/20' : 'bg-zinc-800 text-zinc-500'}`}><IconPlus className="w-5 h-5" /></button>
+        </div>
       </div>
 
       <div className="bg-zinc-950 border border-zinc-900 rounded-xl p-1 flex">
@@ -693,7 +812,7 @@ function RecordsTab({ expenses, upsertExpense, deleteExpense, members, settings,
         <button onClick={() => setView('category')} className={`flex-1 py-2 rounded-lg text-sm ${view === 'category' ? 'bg-orange-500 text-white font-medium' : 'text-zinc-500'}`}>按類別</button>
       </div>
 
-      {expenses.length === 0 && (
+      {visibleExpenses.length === 0 && (
         <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-8 text-center">
           <div className="text-4xl mb-2">📝</div>
           <div className="text-zinc-500 text-sm mb-3">還沒有任何記錄</div>
@@ -701,7 +820,7 @@ function RecordsTab({ expenses, upsertExpense, deleteExpense, members, settings,
         </div>
       )}
 
-      {view === 'date' && sortedDates.map(date => {
+      {!showDeleted && view === 'date' && sortedDates.map(date => {
         const items = grouped[date];
         const dayTotal = items.reduce((s, e) => s + e.amount, 0);
         const dObj = new Date(date);
@@ -717,7 +836,7 @@ function RecordsTab({ expenses, upsertExpense, deleteExpense, members, settings,
         );
       })}
 
-      {view === 'category' && Object.keys(byCategory).map(catId => {
+      {!showDeleted && view === 'category' && Object.keys(byCategory).map(catId => {
         const cat = CATEGORIES.find(c => c.id === catId);
         const { items, total: catTotal } = byCategory[catId];
         return (
@@ -731,7 +850,21 @@ function RecordsTab({ expenses, upsertExpense, deleteExpense, members, settings,
         );
       })}
 
-      {canEditExpense && (showAdd || editExpense) && (
+      {showDeleted && (
+        <div className="space-y-2">
+          {visibleExpenses.map(e => (
+            <div key={e.id} className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 flex items-center gap-3">
+              <div className="flex-1">
+                <div className="text-white text-sm">{e.name}</div>
+                <div className="text-xs text-zinc-500">{e.date} · {formatMoney(e.amount, settings.fromCurrency)}</div>
+              </div>
+              <button onClick={() => restoreExpense(e.id)} className="px-3 py-1.5 text-xs rounded-lg bg-green-500/20 text-green-300">還原</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {canEditExpense && !showDeleted && (showAdd || editExpense) && (
         <ExpenseEditor
           expense={editExpense}
           members={members}
@@ -1123,17 +1256,19 @@ function ScanItemCard({ item, members, settings, onUpdate, onDelete }) {
 
 // ========== StatsTab ==========
 function StatsTab({ expenses, settings, members, currentRate }) {
-  const total = expenses.reduce((s, e) => s + e.amount, 0);
+  const activeExpenses = expenses.filter(e => !e.deletedAt);
+  const total = activeExpenses.reduce((s, e) => s + e.amount, 0);
   const byCategory = {};
-  expenses.forEach(e => { byCategory[e.category] = (byCategory[e.category] || 0) + e.amount; });
-  const balances = calculateBalances(expenses, members);
+  activeExpenses.forEach(e => { byCategory[e.category] = (byCategory[e.category] || 0) + e.amount; });
+  const balances = calculateBalances(activeExpenses, members);
   const memberSpent = {};
   members.forEach(m => memberSpent[m.id] = 0);
-  expenses.forEach(exp => {
+  activeExpenses.forEach(exp => {
     const shares = getExpenseShares(exp, members.map(m => m.id));
     Object.entries(shares).forEach(([id, amt]) => { memberSpent[id] = (memberSpent[id] || 0) + amt; });
   });
-  const top10 = [...expenses].sort((a, b) => b.amount - a.amount).slice(0, 10);
+  const top10 = [...activeExpenses].sort((a, b) => b.amount - a.amount).slice(0, 10);
+  const ranking = members.map(m => ({ ...m, spent: memberSpent[m.id] || 0 })).sort((a, b) => b.spent - a.spent);
 
   return (
     <div className="px-5 safe-top pt-16 pb-4 space-y-4">
@@ -1174,6 +1309,24 @@ function StatsTab({ expenses, settings, members, currentRate }) {
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+      {ranking.length > 0 && (
+        <div className="bg-zinc-950 border border-zinc-900 rounded-3xl p-5">
+          <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wider mb-3">發達排行榜</h2>
+          <div className="space-y-2">
+            {ranking.map((m, idx) => (
+              <div key={m.id} className="flex items-center gap-3">
+                <span className="text-xs text-zinc-500 w-4">{idx + 1}</span>
+                <MemberAvatar member={m} size={30} />
+                <div className="flex-1 text-sm text-white">{m.name}</div>
+                <div className="text-right">
+                  <div className="text-sm text-white font-bold">{formatMoney(m.spent, settings.fromCurrency)}</div>
+                  <div className={`text-[10px] ${idx === 0 ? 'text-amber-400' : idx === ranking.length - 1 ? 'text-cyan-400' : 'text-zinc-500'}`}>{idx === 0 ? '發咗達' : idx === ranking.length - 1 ? '識計數' : ''}</div>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -1233,10 +1386,11 @@ function DonutChart({ data, total, settings }) {
 }
 
 // ========== SettingsTab ==========
-function SettingsTab({ settings, saveSettings, members, upsertMember, deleteMember, currentRate, refreshRate, refreshing, canManageMembers, canManageTrip, currentUser, currentRole, trips, tripId, createTrip, setTripHash }) {
+function SettingsTab({ settings, saveSettings, members, upsertMember, deleteMember, currentRate, refreshRate, refreshing, canManageMembers, canManageTrip, currentUser, currentRole, trips, tripId, createTrip, setTripHash, activityLogs, comments, addComment }) {
   const [editingMember, setEditingMember] = useState(null);
   const [showAddMember, setShowAddMember] = useState(false);
   const [showCurrencyPicker, setShowCurrencyPicker] = useState(null);
+  const [commentText, setCommentText] = useState('');
 
   const handleDeleteMember = (id) => { if (confirm('確定刪除？')) deleteMember(id); };
   const fromCur = CURRENCIES.find(c => c.code === settings.fromCurrency);
@@ -1281,6 +1435,12 @@ function SettingsTab({ settings, saveSettings, members, upsertMember, deleteMemb
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4 space-y-3">
+        <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wider">邀請連結</h2>
+        <div className="text-xs text-zinc-500 break-all">{`${window.location.origin}${window.location.pathname}#/trip/${tripId}`}</div>
+        <img alt="trip-qr" className="w-32 h-32 rounded-xl bg-white p-1" src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(`${window.location.origin}${window.location.pathname}#/trip/${tripId}`)}`} />
       </div>
 
       <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4 space-y-4">
@@ -1334,6 +1494,35 @@ function SettingsTab({ settings, saveSettings, members, upsertMember, deleteMemb
         <div>打開後全螢幕，同 App Store app 一樣。</div>
         <div className="text-orange-400 font-medium mt-2 mb-1">🔗 分享俾朋友</div>
         <div>將呢個網頁連結傳俾朋友，大家即時睇到同一批數據。</div>
+      </div>
+
+      <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4 space-y-3">
+        <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wider">留言</h2>
+        <div className="flex gap-2">
+          <input value={commentText} onChange={e => setCommentText(e.target.value)} placeholder="留句說話俾旅伴…" className="flex-1 px-3 py-2 bg-zinc-800 text-white rounded-xl text-sm" />
+          <button onClick={() => { addComment(commentText); setCommentText(''); }} className="px-3 py-2 bg-orange-500 text-white rounded-xl text-sm">送出</button>
+        </div>
+        <div className="space-y-2 max-h-48 overflow-y-auto">
+          {comments.slice(-20).reverse().map(c => (
+            <div key={c.id} className="bg-zinc-900 rounded-xl p-2.5">
+              <div className="text-xs font-medium" style={{ color: c.color || '#F97316' }}>{c.memberName || 'Unknown'}</div>
+              <div className="text-sm text-white mt-0.5">{c.text}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4 space-y-3">
+        <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wider">活動記錄</h2>
+        <div className="space-y-2 max-h-56 overflow-y-auto">
+          {activityLogs.slice(0, 50).map(log => (
+            <div key={log.id} className="bg-zinc-900 rounded-xl p-2.5">
+              <div className="text-[11px] font-medium" style={{ color: log.color || '#F97316' }}>{log.memberName || 'Unknown'}</div>
+              <div className="text-xs text-white mt-0.5">{log.detail}</div>
+              <div className="text-[10px] text-zinc-500 mt-0.5">{new Date(log.createdAt || Date.now()).toLocaleString('zh-HK')}</div>
+            </div>
+          ))}
+        </div>
       </div>
 
       {canManageMembers && (showAddMember || editingMember) && (
