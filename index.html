@@ -1,0 +1,3065 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Travel">
+<meta name="theme-color" content="#000000">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 180 180'%3E%3Crect width='180' height='180' rx='40' fill='%23000'/%3E%3Ctext x='90' y='120' font-size='90' text-anchor='middle' fill='%23FF8C00'%3E✈️%3C/text%3E%3C/svg%3E">
+<title>Travel Tracker</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+<style>
+  html, body { background: #000; margin: 0; padding: 0; overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
+  body { font-family: -apple-system, "PingFang HK", "Noto Sans TC", "Microsoft JhengHei", sans-serif; }
+  * { -webkit-user-select: none; user-select: none; }
+  input, textarea { -webkit-user-select: text; user-select: text; }
+  input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(1); }
+  ::-webkit-scrollbar { display: none; }
+  .safe-top { padding-top: max(calc(env(safe-area-inset-top) + 12px), 72px); }
+  .safe-bottom { padding-bottom: max(env(safe-area-inset-bottom), 24px); }
+</style>
+</head>
+<body class="bg-black">
+<div id="root"></div>
+<div id="err-panel" style="display:none; position:fixed; inset:0; background:#000; color:#fff; font-family:monospace; font-size:11px; padding:12px; padding-top:60px; padding-bottom:40px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; z-index:99999;"></div>
+<script>
+(function(){
+  // 只係 React 未 mount 時先 show error panel（即 #root 仲係空）
+  function rootEmpty(){
+    var root = document.getElementById('root');
+    return root && root.childElementCount === 0;
+  }
+  function showErr(msg){
+    if(!rootEmpty()) return; // React 已 mount 就唔覆蓋畫面
+    var el = document.getElementById('err-panel');
+    if(!el) return;
+    el.style.display = 'block';
+    el.textContent = (el.textContent ? el.textContent + '\n\n---\n\n' : '') + msg;
+  }
+  window.addEventListener('error', function(e){
+    showErr('[ERROR] ' + (e.message || e.error) + '\n' + (e.filename||'') + ':' + (e.lineno||'') + ':' + (e.colno||'') + '\n' + ((e.error && e.error.stack) || ''));
+  });
+  window.addEventListener('unhandledrejection', function(e){
+    var msg = (e.reason && (e.reason.message || e.reason)) + '';
+    // 忽略 Firestore persistence warning（唔影響功能）
+    if (msg.indexOf('persistence') !== -1 || msg.indexOf('exclusive access') !== -1) return;
+    showErr('[PROMISE REJECTED] ' + msg + '\n' + ((e.reason && e.reason.stack) || ''));
+  });
+  // 5 秒後如果 root 仲係空，show hint
+  setTimeout(function(){
+    if(rootEmpty()){
+      showErr('[HINT] React 冇 mount 到。可能原因：\n1. CDN block（Tailwind / React / Babel）\n2. Babel 轉換失敗\n3. JSX runtime error');
+    }
+  }, 5000);
+})();
+</script>
+
+<script type="module">
+  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+  import { getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, onSnapshot, enableIndexedDbPersistence, enableMultiTabIndexedDbPersistence } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyCBROXAaKZIXwteh-QJbpmSsLfa273kOLw",
+    authDomain: "travel-tracker-38613.firebaseapp.com",
+    projectId: "travel-tracker-38613",
+    storageBucket: "travel-tracker-38613.firebasestorage.app",
+    messagingSenderId: "1076074490049",
+    appId: "1:1076074490049:web:ca51167a60db23011a0c40"
+  };
+
+  const fbApp = initializeApp(firebaseConfig);
+  const db = getFirestore(fbApp);
+  // multi-tab 容忍多個 tab 同時開（避免 exclusive lock error）
+  enableMultiTabIndexedDbPersistence(db).catch(err => {
+    // failed-precondition = 已有其他 tab open，唔使緊；unimplemented = browser 唔 support
+    console.warn('persistence disabled:', err && err.code);
+  });
+
+  window.__firebase = { db, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, onSnapshot };
+  window.dispatchEvent(new Event('firebase-ready'));
+</script>
+
+<script type="text/babel" data-type="module">
+const { useState, useEffect, useRef } = React;
+
+// ========== 簡易圖示 (SVG) ==========
+const Icon = ({ d, className = 'w-5 h-5', stroke = 2 }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round" className={className}>
+    {typeof d === 'string' ? <path d={d} /> : d}
+  </svg>
+);
+const IconHome = (p) => <Icon {...p} d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M9 22V12h6v10" />;
+const IconList = (p) => <Icon {...p} d={<><rect x="8" y="2" width="8" height="4" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></>} />;
+const IconCamera = (p) => <Icon {...p} d={<><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></>} />;
+const IconChart = (p) => <Icon {...p} d={<><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></>} />;
+const IconSettings = (p) => <Icon {...p} d={<><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></>} />;
+const IconPlus = (p) => <Icon {...p} d={<><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></>} />;
+const IconTrash = (p) => <Icon {...p} d={<><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></>} />;
+const IconPencil = (p) => <Icon {...p} d={<><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></>} />;
+const IconX = (p) => <Icon {...p} d={<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>} />;
+const IconUpload = (p) => <Icon {...p} d={<><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>} />;
+const IconRefresh = (p) => <Icon {...p} d={<><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></>} />;
+const IconCheck = (p) => <Icon {...p} d="M20 6L9 17l-5-5" />;
+const IconChevron = (p) => <Icon {...p} d="M9 18l6-6-6-6" />;
+const IconTrend = (p) => <Icon {...p} d={<><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></>} />;
+const IconWallet = (p) => <Icon {...p} d={<><path d="M20 12V8H6a2 2 0 0 1-2-2c0-1.1.9-2 2-2h12v4"/><path d="M4 6v12c0 1.1.9 2 2 2h14v-4"/><path d="M18 12a2 2 0 0 0-2 2c0 1.1.9 2 2 2h4v-4h-4z"/></>} />;
+const IconDollar = (p) => <Icon {...p} d={<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></>} />;
+const IconUsers = (p) => <Icon {...p} d={<><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></>} />;
+const IconWifi = (p) => <Icon {...p} d={<><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></>} />;
+const IconWifiOff = (p) => <Icon {...p} d={<><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.58 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></>} />;
+const IconLoader = (p) => <Icon {...p} d={<><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/></>} />;
+
+// ========== 設定 ==========
+const CATEGORIES = [
+  { id: 'food', name: '餐飲', color: '#FF8C00', emoji: '🍜' },
+  { id: 'transport', name: '交通', color: '#F59E0B', emoji: '🚅' },
+  { id: 'shopping', name: '購物', color: '#EF4444', emoji: '🛍️' },
+  { id: 'accommodation', name: '住宿', color: '#8B5CF6', emoji: '🏨' },
+  { id: 'ticket', name: '門票', color: '#06B6D4', emoji: '🎫' },
+  { id: 'medicine', name: '藥品', color: '#EC4899', emoji: '💊' },
+  { id: 'entertainment', name: '娛樂', color: '#F472B6', emoji: '🎮' },
+  { id: 'other', name: '其他', color: '#6B7280', emoji: '📦' },
+];
+
+const CURRENCIES = [
+  { code: 'JPY', symbol: '¥', name: '日圓', flag: '🇯🇵' },
+  { code: 'HKD', symbol: 'HK$', name: '港幣', flag: '🇭🇰' },
+  { code: 'TWD', symbol: 'NT$', name: '台幣', flag: '🇹🇼' },
+  { code: 'USD', symbol: 'US$', name: '美元', flag: '🇺🇸' },
+  { code: 'EUR', symbol: '€', name: '歐元', flag: '🇪🇺' },
+  { code: 'GBP', symbol: '£', name: '英鎊', flag: '🇬🇧' },
+  { code: 'KRW', symbol: '₩', name: '韓元', flag: '🇰🇷' },
+  { code: 'CNY', symbol: '¥', name: '人民幣', flag: '🇨🇳' },
+  { code: 'THB', symbol: '฿', name: '泰銖', flag: '🇹🇭' },
+  { code: 'SGD', symbol: 'S$', name: '新幣', flag: '🇸🇬' },
+  { code: 'AUD', symbol: 'A$', name: '澳元', flag: '🇦🇺' },
+  { code: 'CAD', symbol: 'C$', name: '加元', flag: '🇨🇦' },
+  { code: 'VND', symbol: '₫', name: '越南盾', flag: '🇻🇳' },
+  { code: 'PHP', symbol: '₱', name: '菲律賓比索', flag: '🇵🇭' },
+  { code: 'IDR', symbol: 'Rp', name: '印尼盾', flag: '🇮🇩' },
+  { code: 'MYR', symbol: 'RM', name: '馬幣', flag: '🇲🇾' },
+];
+
+const PAYMENT_METHODS = [
+  { id: 'cash', name: '現金' },
+  { id: 'credit', name: '信用卡' },
+  { id: 'mobile', name: '行動支付' },
+  { id: 'other', name: '其他' },
+];
+
+const DEFAULT_SETTINGS = {
+  tripName: '日本之旅',
+  startDate: new Date().toISOString().split('T')[0],
+  totalDays: 7,
+  fromCurrency: 'JPY',
+  toCurrency: 'HKD',
+};
+
+// Round 2 會用到。Round 1 已出現喺 MemberEditor
+const PRESET_COLORS = ['#FF8C00','#EF4444','#F472B6','#8B5CF6','#3B82F6','#06B6D4','#10B981','#F59E0B'];
+
+const ROLES = {
+  admin:  { id: 'admin',  name: 'Admin',  desc: '所有權限（管理旅伴、封存、刪除）' },
+  editor: { id: 'editor', name: 'Editor', desc: '可新增 / 修改 / 刪除消費' },
+  viewer: { id: 'viewer', name: 'Viewer', desc: '只可查看' },
+};
+const ROLE_ORDER = ['admin', 'editor', 'viewer'];
+
+// ========== Color helpers ==========
+function hexToRgb(hex) {
+  const h = hex.replace('#', '');
+  if (h.length !== 6) return { r: 255, g: 140, b: 0 };
+  return { r: parseInt(h.slice(0,2),16), g: parseInt(h.slice(2,4),16), b: parseInt(h.slice(4,6),16) };
+}
+function rgbToHex(r, g, b) {
+  const clamp = (v) => Math.max(0, Math.min(255, Math.round(v)));
+  const to2 = (v) => clamp(v).toString(16).padStart(2, '0');
+  return '#' + to2(r) + to2(g) + to2(b);
+}
+// 相對亮度（WCAG）
+function relLum({ r, g, b }) {
+  const ch = (v) => { v /= 255; return v <= 0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055, 2.4); };
+  return 0.2126 * ch(r) + 0.7152 * ch(g) + 0.0722 * ch(b);
+}
+// 黑底下，若文字太暗就 lighten 到最低可讀度
+function ensureReadableColor(hex) {
+  if (!hex || typeof hex !== 'string') return '#FF8C00';
+  const rgb = hexToRgb(hex);
+  let lum = relLum(rgb);
+  if (lum >= 0.18) return hex;
+  // 與白色 blend 到 lum ~= 0.3
+  let t = 0;
+  let { r, g, b } = rgb;
+  while (lum < 0.28 && t < 1) {
+    t += 0.08;
+    r = rgb.r + (255 - rgb.r) * t;
+    g = rgb.g + (255 - rgb.g) * t;
+    b = rgb.b + (255 - rgb.b) * t;
+    lum = relLum({ r, g, b });
+  }
+  return rgbToHex(r, g, b);
+}
+
+// ========== URL hash routing ==========
+// 格式：
+//   (empty or #/)                  → trip list
+//   #/trip/{tripId}                → enter trip
+//   #/trip/{tripId}/invite/{token} → enter trip via invite token
+//   (亦支援舊 #/trip/{tripId}?invite=xxx 兼容性)
+function parseRoute() {
+  const hash = window.location.hash || '';
+  // 新格式: /invite/<token>
+  let m = hash.match(/^#\/trip\/([A-Za-z0-9_-]+)\/invite\/([A-Za-z0-9_-]+)/);
+  if (m) return { kind: 'trip', tripId: m[1], invite: m[2] };
+  // 舊格式: ?invite=<token>
+  m = hash.match(/^#\/trip\/([A-Za-z0-9_-]+)(?:\?invite=([A-Za-z0-9_-]+))?/);
+  if (m) return { kind: 'trip', tripId: m[1], invite: m[2] || null };
+  return { kind: 'list' };
+}
+function setRoute(route) {
+  if (route.kind === 'list') window.location.hash = '#/';
+  else if (route.kind === 'trip') {
+    const inv = route.invite ? `/invite/${route.invite}` : '';
+    window.location.hash = '#/trip/' + route.tripId + inv;
+  }
+}
+function genId() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+// ========== Owner 系統 ==========
+// trips/_meta/owner doc 存 { secretHash, createdAt }
+// 本機 localStorage 'owner_secret' 記住自己嘅 secret
+// 兩部裝置之間 sync owner 身分：第二部裝置貼返 secret 就認
+
+async function sha256(text) {
+  const buf = new TextEncoder().encode(text);
+  const hash = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+function genOwnerSecret() {
+  // 易讀格式：xxxx-xxxx-xxxx
+  const part = () => Math.random().toString(36).slice(2, 6);
+  return `chiu-${part()}-${part()}-${part()}`;
+}
+function getLocalOwnerSecret() { return localStorage.getItem('owner_secret') || ''; }
+function setLocalOwnerSecret(s) { if (s) localStorage.setItem('owner_secret', s); else localStorage.removeItem('owner_secret'); }
+
+// 朋友本機已 join 過嘅 trip ids（一旦揀過 identity 就記低）
+function getJoinedTrips() {
+  try { return JSON.parse(localStorage.getItem('joined_trips') || '[]'); }
+  catch { return []; }
+}
+function addJoinedTrip(tripId) {
+  const arr = getJoinedTrips();
+  if (!arr.includes(tripId)) {
+    arr.push(tripId);
+    localStorage.setItem('joined_trips', JSON.stringify(arr));
+  }
+}
+function tripShareUrl(tripId) {
+  const base = window.location.origin + window.location.pathname;
+  return base + '#/trip/' + tripId;
+}
+async function shareTrip(tripId, tripName) {
+  const url = tripShareUrl(tripId);
+  const title = tripName || '旅程';
+  try {
+    if (navigator.share) {
+      await navigator.share({ title, text: '一齊記帳：' + title, url });
+      return { ok: true, method: 'share' };
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return { ok: false, method: 'cancelled' };
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    return { ok: true, method: 'clipboard' };
+  } catch (e) {
+    return { ok: false, method: 'fail', url };
+  }
+}
+
+// ========== 匯率（3-fallback） ==========
+async function fetchExchangeRate(from, to) {
+  // 1. open.er-api.com
+  try {
+    const res = await fetch(`https://open.er-api.com/v6/latest/${from}`);
+    const data = await res.json();
+    if (data?.result === 'success' && data.rates?.[to]) {
+      return { rate: data.rates[to], timestamp: (data.time_last_update_unix || Math.floor(Date.now()/1000)) * 1000, source: 'er-api' };
+    }
+  } catch (e) {}
+  // 2. jsdelivr Fawaz currency-api
+  try {
+    const res = await fetch(`https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/${from.toLowerCase()}.json`);
+    const data = await res.json();
+    const bucket = data?.[from.toLowerCase()];
+    if (bucket && bucket[to.toLowerCase()]) {
+      return { rate: bucket[to.toLowerCase()], timestamp: Date.now(), source: 'jsdelivr' };
+    }
+  } catch (e) {}
+  // 3. cloudflare pages Fawaz mirror
+  try {
+    const res = await fetch(`https://latest.currency-api.pages.dev/v1/currencies/${from.toLowerCase()}.json`);
+    const data = await res.json();
+    const bucket = data?.[from.toLowerCase()];
+    if (bucket && bucket[to.toLowerCase()]) {
+      return { rate: bucket[to.toLowerCase()], timestamp: Date.now(), source: 'cloudflare' };
+    }
+  } catch (e) {}
+  return null;
+}
+
+function getCurrencySymbol(code) { return CURRENCIES.find(c => c.code === code)?.symbol || code; }
+function formatMoney(amount, code, short = false) {
+  const sym = getCurrencySymbol(code);
+  if (short && Math.abs(amount) >= 10000) return sym + (amount / 1000).toFixed(1) + 'k';
+  return sym + Math.round(amount).toLocaleString();
+}
+function convert(amount, rate) { return (!rate || !rate.rate) ? 0 : amount * rate.rate; }
+
+function calculateBalances(expenses, members) {
+  const balances = {};
+  members.forEach(m => balances[m.id] = 0);
+  expenses.forEach(exp => {
+    if (exp.deleted) return;
+    if (exp.txType === 'personal') return; // 個人消費完全唔入結算
+    if (!exp.paidBy || !exp.splitAmong || exp.splitAmong.length === 0) return;
+    balances[exp.paidBy] = (balances[exp.paidBy] || 0) + exp.amount;
+    if (exp.splitMode === 'manual' && exp.splitAmounts) {
+      // 手動金額：用每人指定金額
+      exp.splitAmong.forEach(mid => {
+        const share = parseFloat(exp.splitAmounts[mid]) || 0;
+        balances[mid] = (balances[mid] || 0) - share;
+      });
+    } else {
+      // 平均分
+      const perPerson = exp.amount / exp.splitAmong.length;
+      exp.splitAmong.forEach(mid => { balances[mid] = (balances[mid] || 0) - perPerson; });
+    }
+  });
+  return balances;
+}
+
+// 每人實際花費（用於排行榜 + 統計）：個人消費 + 共同分擔嘅份
+function calculateMemberSpending(expenses, members) {
+  const spent = {};
+  members.forEach(m => spent[m.id] = 0);
+  expenses.forEach(exp => {
+    if (exp.deleted) return;
+    if (exp.txType === 'personal') {
+      // 個人消費：全數算畀付款人
+      if (exp.paidBy) spent[exp.paidBy] = (spent[exp.paidBy] || 0) + exp.amount;
+      return;
+    }
+    if (!exp.splitAmong || exp.splitAmong.length === 0) return;
+    if (exp.splitMode === 'manual' && exp.splitAmounts) {
+      exp.splitAmong.forEach(mid => {
+        spent[mid] = (spent[mid] || 0) + (parseFloat(exp.splitAmounts[mid]) || 0);
+      });
+    } else {
+      const per = exp.amount / exp.splitAmong.length;
+      exp.splitAmong.forEach(mid => { spent[mid] = (spent[mid] || 0) + per; });
+    }
+  });
+  return spent;
+}
+
+function simplifyTransfers(balances) {
+  const creditors = [], debtors = [];
+  Object.entries(balances).forEach(([id, bal]) => {
+    if (bal > 0.01) creditors.push({ id, amount: bal });
+    else if (bal < -0.01) debtors.push({ id, amount: -bal });
+  });
+  creditors.sort((a, b) => b.amount - a.amount);
+  debtors.sort((a, b) => b.amount - a.amount);
+  const transfers = [];
+  let i = 0, j = 0;
+  while (i < debtors.length && j < creditors.length) {
+    const amt = Math.min(debtors[i].amount, creditors[j].amount);
+    if (amt > 0.01) transfers.push({ from: debtors[i].id, to: creditors[j].id, amount: amt });
+    debtors[i].amount -= amt;
+    creditors[j].amount -= amt;
+    if (debtors[i].amount < 0.01) i++;
+    if (creditors[j].amount < 0.01) j++;
+  }
+  return transfers;
+}
+
+// ========== Root App：route dispatcher ==========
+function App() {
+  const [fbReady, setFbReady] = useState(!!window.__firebase);
+  const [route, setRouteState] = useState(() => parseRoute());
+  const [online, setOnline] = useState(navigator.onLine);
+  const [ownerHash, setOwnerHash] = useState(null); // null = 未 set / loading; '' = 未有 owner; string = hash
+  const [isOwner, setIsOwner] = useState(false);
+
+  useEffect(() => {
+    if (fbReady) return;
+    const handler = () => setFbReady(true);
+    window.addEventListener('firebase-ready', handler);
+    return () => window.removeEventListener('firebase-ready', handler);
+  }, [fbReady]);
+
+  // 訂閱 owner doc + verify local secret
+  useEffect(() => {
+    if (!fbReady) return;
+    const { db, doc, onSnapshot } = window.__firebase;
+    const unsub = onSnapshot(doc(db, 'trips', '_meta'), async (snap) => {
+      const data = snap.exists() ? snap.data() : null;
+      const hash = data?.ownerHash || '';
+      setOwnerHash(hash);
+      const localSecret = getLocalOwnerSecret();
+      if (!hash || !localSecret) { setIsOwner(false); return; }
+      try {
+        const localHash = await sha256(localSecret);
+        setIsOwner(localHash === hash);
+      } catch (e) { setIsOwner(false); }
+    });
+    return () => unsub();
+  }, [fbReady]);
+
+  useEffect(() => {
+    const onHash = () => setRouteState(parseRoute());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  useEffect(() => {
+    const onOnline = () => setOnline(true);
+    const onOffline = () => setOnline(false);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+    };
+  }, []);
+
+  // 朋友模式：唔俾返主頁睇其他 trip。route 變返 list → 自動 redirect 返佢上次 join 嘅 trip
+  useEffect(() => {
+    if (!fbReady) return;
+    if (ownerHash === null) return; // owner state 仲未 load
+    if (isOwner) return;
+    if (route.kind !== 'list') return;
+    const joined = getJoinedTrips();
+    if (joined.length === 0) return; // 朋友未 join 過任何 trip — 顯示「請等邀請」畫面
+    // Redirect 返最後一個 join 嘅 trip
+    const lastTrip = joined[joined.length - 1];
+    setRoute({ kind: 'trip', tripId: lastTrip });
+  }, [fbReady, ownerHash, isOwner, route.kind]);
+
+  if (!fbReady) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-black">
+        <div className="flex flex-col items-center gap-3">
+          <IconLoader className="w-8 h-8 animate-spin text-orange-500" />
+          <div className="text-zinc-500 text-xs">連接雲端中...</div>
+        </div>
+      </div>
+    );
+  }
+
+  const ownerCtx = { isOwner, ownerHash, setIsOwner };
+
+  if (route.kind === 'list') {
+    return <TripListScreen online={online} ownerCtx={ownerCtx} />;
+  }
+  return <TripApp key={route.tripId} tripId={route.tripId} online={online} ownerCtx={ownerCtx} route={route} />;
+}
+
+// ========== TripListScreen ==========
+function TripListScreen({ online, ownerCtx }) {
+  const [trips, setTrips] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showNew, setShowNew] = useState(false);
+  const [editTrip, setEditTrip] = useState(null);
+  const [shareToast, setShareToast] = useState('');
+  const [showPast, setShowPast] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [showOwnerSetup, setShowOwnerSetup] = useState(false);
+  const { isOwner, ownerHash } = ownerCtx;
+  const joinedIds = getJoinedTrips();
+
+  useEffect(() => {
+    const { db, collection, onSnapshot } = window.__firebase;
+    const tripsRef = collection(db, 'trips');
+    const unsub = onSnapshot(tripsRef, (snap) => {
+      const list = [];
+      let hasDefaultTombstone = false;
+      snap.forEach(d => {
+        if (d.id === '_meta') return; // skip owner meta doc
+        const data = d.data() || {};
+        if (data.deleted) { if (d.id === 'default') hasDefaultTombstone = true; return; }
+        list.push({ id: d.id, ...data });
+      });
+      const hasDefault = list.some(t => t.id === 'default');
+      if (!hasDefault && !hasDefaultTombstone) {
+        list.push({ id: 'default', name: '日本之旅（舊資料）', _legacy: true });
+      }
+      list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      setTrips(list);
+      setLoading(false);
+    }, () => setLoading(false));
+    return () => unsub();
+  }, []);
+
+  const createTrip = async ({ name, fromCurrency, toCurrency, startDate, totalDays }) => {
+    const { db, doc, setDoc } = window.__firebase;
+    const id = genId();
+    await setDoc(doc(db, 'trips', id), {
+      name: name || '新旅程',
+      fromCurrency: fromCurrency || 'JPY',
+      toCurrency:   toCurrency   || 'HKD',
+      startDate:    startDate    || new Date().toISOString().split('T')[0],
+      totalDays:    totalDays    || 7,
+      createdAt:    Date.now(),
+      updatedAt:    Date.now(),
+      archived:     false,
+    });
+    setShowNew(false);
+    setRoute({ kind: 'trip', tripId: id });
+  };
+
+  const updateTripMeta = async (tripId, patch) => {
+    const { db, doc, setDoc } = window.__firebase;
+    await setDoc(doc(db, 'trips', tripId), { ...patch, updatedAt: Date.now() }, { merge: true });
+  };
+
+  const toggleArchive = async (trip) => {
+    if (trip._legacy) return; // legacy 自動收埋
+    await updateTripMeta(trip.id, { archived: !trip.archived });
+  };
+
+  // 永久刪除：delete 所有 subcollection docs。Legacy trip 就寫一個 "tombstone" doc 標記刪除。
+  const deleteTripPermanent = async (trip) => {
+    const { db, doc, deleteDoc, setDoc, collection, onSnapshot } = window.__firebase;
+    setDeleting(true);
+    try {
+      const subColls = ['expenses', 'members'];
+      for (const name of subColls) {
+        const ref = collection(db, 'trips', trip.id, name);
+        const docs = await new Promise((resolve, reject) => {
+          let done = false;
+          const unsub = onSnapshot(ref, (snap) => {
+            if (done) return;
+            done = true;
+            const ids = [];
+            snap.forEach(d => ids.push(d.id));
+            unsub();
+            resolve(ids);
+          }, reject);
+        });
+        await Promise.all(docs.map(id => deleteDoc(doc(db, 'trips', trip.id, name, id))));
+      }
+      try { await deleteDoc(doc(db, 'trips', trip.id, 'meta', 'settings')); } catch (e) {}
+      // Trip doc 本身：對於 legacy trip（無 doc）我哋 write 一個 tombstone；其他 trip 直接 delete
+      if (trip._legacy) {
+        try {
+          await setDoc(doc(db, 'trips', trip.id), {
+            name: trip.name || '已刪除',
+            deleted: true,
+            deletedAt: Date.now(),
+            archived: true,
+          });
+        } catch (e) { console.error('tombstone fail', e); }
+      } else {
+        try { await deleteDoc(doc(db, 'trips', trip.id)); } catch (e) {}
+      }
+      localStorage.removeItem('identity:' + trip.id);
+      setConfirmDelete(null);
+    } catch (e) {
+      alert('刪除失敗：' + (e?.message || e));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleShare = async (trip) => {
+    const r = await shareTrip(trip.id, trip.name);
+    if (r.method === 'share') setShareToast('已分享 ✓');
+    else if (r.method === 'clipboard') setShareToast('連結已複製 ✓');
+    else if (r.method === 'fail') setShareToast('複製失敗：' + (r.url || ''));
+    if (r.method !== 'cancelled') setTimeout(() => setShareToast(''), 2400);
+  };
+
+  // 分組：過往 vs 進行中/未來
+  const today = new Date(); today.setHours(0,0,0,0);
+  const isPast = (t) => {
+    if (t.archived) return true;
+    if (t._legacy) return true;
+    if (!t.startDate) return false;
+    try {
+      const start = new Date(t.startDate);
+      const end = new Date(start);
+      end.setDate(end.getDate() + (t.totalDays || 7));
+      return end < today;
+    } catch (e) { return false; }
+  };
+  // Owner 見全部；朋友只見自己加入過嘅
+  const visibleTrips = isOwner ? trips : trips.filter(t => joinedIds.includes(t.id));
+  const currentTrips = visibleTrips.filter(t => !isPast(t));
+  const pastTrips = visibleTrips.filter(t => isPast(t));
+
+  const renderTripCard = (t, { inPast = false } = {}) => (
+    <div key={t.id} className={`bg-zinc-950 border border-zinc-900 rounded-2xl p-4 ${t.archived ? 'opacity-70' : ''}`}>
+      <button onClick={() => setRoute({ kind: 'trip', tripId: t.id })} className="w-full text-left">
+        <div className="flex items-center justify-between">
+          <div className="flex-1 min-w-0">
+            <div className="text-white font-bold truncate">{t.name || '(未命名)'}</div>
+            <div className="text-xs text-zinc-500 mt-0.5">
+              {t.startDate ? t.startDate : '—'} · {t.fromCurrency || '?'} → {t.toCurrency || '?'}
+              {t._legacy && <span className="ml-1 text-orange-500">[舊]</span>}
+              {t.archived && <span className="ml-1 text-zinc-600">已封存</span>}
+            </div>
+          </div>
+          <IconChevron className="w-4 h-4 text-zinc-600 flex-shrink-0 ml-2" />
+        </div>
+      </button>
+      <div className="flex gap-2 mt-3">
+        {isOwner && <button onClick={() => handleShare(t)} className="flex-1 py-2 text-xs bg-zinc-900 text-zinc-300 rounded-lg">🔗 分享</button>}
+        {isOwner && !t._legacy && !inPast && <button onClick={() => toggleArchive(t)} className="flex-1 py-2 text-xs bg-zinc-900 text-zinc-300 rounded-lg">📦 封存</button>}
+        {isOwner && !t._legacy && inPast && t.archived && <button onClick={() => toggleArchive(t)} className="flex-1 py-2 text-xs bg-zinc-900 text-zinc-300 rounded-lg">↩️ 取消封存</button>}
+        {isOwner && !t._legacy && <button onClick={() => setEditTrip(t)} className="px-3 py-2 text-xs bg-zinc-900 text-zinc-300 rounded-lg"><IconPencil className="w-3.5 h-3.5" /></button>}
+        {isOwner && inPast && <button onClick={() => setConfirmDelete({ trip: t, stage: 1 })} className="px-3 py-2 text-xs bg-red-500/10 text-red-400 rounded-lg"><IconTrash className="w-3.5 h-3.5" /></button>}
+        {!isOwner && <div className="flex-1 text-center text-[10px] text-zinc-600 py-2">朋友模式</div>}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="h-screen w-full bg-black flex flex-col max-w-md mx-auto overflow-hidden">
+      <div className="flex-1 overflow-y-auto">
+        <div className="px-5 safe-top pt-4 pb-6 space-y-4">
+          <div className="flex justify-between items-start">
+            <div>
+              <div className="text-xs text-zinc-500 uppercase tracking-widest mb-1">Travel Tracker {isOwner && <span className="text-orange-400">· Owner</span>}</div>
+              <h1 className="text-3xl font-bold text-white">{isOwner ? '我的旅程' : '我加入嘅旅程'}</h1>
+            </div>
+            <div className={`flex items-center gap-1 px-2 py-1 rounded-full text-[10px] ${online ? 'bg-green-500/10 text-green-400' : 'bg-zinc-800 text-zinc-500'}`}>
+              {online ? <IconWifi className="w-3 h-3" /> : <IconWifiOff className="w-3 h-3" />}
+              <span>{online ? '已連線' : '離線'}</span>
+            </div>
+          </div>
+
+          {isOwner && (
+            <button onClick={() => setShowNew(true)} className="w-full py-4 bg-gradient-to-br from-orange-400 to-orange-600 text-white rounded-2xl font-bold shadow-lg shadow-orange-500/20 flex items-center justify-center gap-2">
+              <IconPlus className="w-5 h-5" /> 新增旅程
+            </button>
+          )}
+
+          {!isOwner && (
+            <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4 space-y-3">
+              <div className="text-xs text-zinc-400">{!ownerHash ? '🟠 還沒有 Owner — 你可以成為 Owner' : '👋 你係朋友模式'}</div>
+              <button onClick={() => setShowOwnerSetup(true)} className="w-full py-2.5 bg-zinc-900 text-orange-400 rounded-xl text-sm font-medium border border-orange-500/30">
+                🔑 {!ownerHash ? '成為 Owner' : '我係 Owner，登入'}
+              </button>
+              {ownerHash && <div className="text-[10px] text-zinc-600">朋友只可以入經邀請連結加入嘅旅程，新增旅程同分享連結需要 Owner 權限。</div>}
+            </div>
+          )}
+
+          {loading ? (
+            <div className="py-8 flex justify-center"><IconLoader className="w-6 h-6 animate-spin text-orange-500" /></div>
+          ) : visibleTrips.length === 0 ? (
+            <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-10 text-center">
+              <div className="text-4xl mb-2">{isOwner ? '✈️' : '📩'}</div>
+              <div className="text-zinc-500 text-sm">{isOwner ? '還沒有旅程' : '請等 Owner 分享邀請連結俾你'}</div>
+            </div>
+          ) : (
+            <>
+              {currentTrips.length > 0 ? (
+                <div className="space-y-2">
+                  <div className="text-[10px] text-zinc-500 uppercase tracking-widest px-1 pt-2">進行中 / 未來（{currentTrips.length}）</div>
+                  {currentTrips.map(t => renderTripCard(t))}
+                </div>
+              ) : isOwner ? (
+                <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-6 text-center">
+                  <div className="text-3xl mb-1">🗺️</div>
+                  <div className="text-zinc-500 text-xs">暫時未有進行中嘅旅程</div>
+                </div>
+              ) : null}
+
+              {pastTrips.length > 0 && (
+                <div className="space-y-2 pt-2">
+                  <button onClick={() => setShowPast(p => !p)} className="w-full flex items-center justify-between py-3 px-4 bg-zinc-950 border border-zinc-900 rounded-2xl">
+                    <span className="text-sm text-zinc-400 flex items-center gap-2">📁 過往旅程 <span className="text-zinc-600">({pastTrips.length})</span></span>
+                    <IconChevron className={`w-4 h-4 text-zinc-500 transition-transform ${showPast ? 'rotate-90' : ''}`} />
+                  </button>
+                  {showPast && <div className="space-y-2">{pastTrips.map(t => renderTripCard(t, { inPast: true }))}</div>}
+                </div>
+              )}
+            </>
+          )}
+
+          {isOwner && (
+            <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4 text-xs text-zinc-400 space-y-1">
+              <div className="text-orange-400 font-medium mb-1">💡 小貼士</div>
+              <div>結束日期過咗嘅旅程會自動收埋入「過往旅程」。</div>
+              <div>朋友只可以喺你分享嘅旅程裡面郁，唔可以新增 / 分享其他旅程。</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {shareToast && (
+        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-zinc-800 text-white text-sm px-4 py-2 rounded-full z-50 shadow-lg">{shareToast}</div>
+      )}
+
+      {showOwnerSetup && <OwnerSetup ownerCtx={ownerCtx} onClose={() => setShowOwnerSetup(false)} />}
+      {showNew && <TripMetaEditor onClose={() => setShowNew(false)} onSave={createTrip} />}
+      {editTrip && <TripMetaEditor trip={editTrip} onClose={() => setEditTrip(null)} onSave={async (patch) => { await updateTripMeta(editTrip.id, patch); setEditTrip(null); }} />}
+
+      {confirmDelete && (
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-5 backdrop-blur-sm" onClick={() => !deleting && setConfirmDelete(null)}>
+          <div className="bg-zinc-900 w-full max-w-sm rounded-3xl p-5 border border-red-500/30" onClick={e => e.stopPropagation()}>
+            <div className="text-center mb-4">
+              <div className="text-4xl mb-2">⚠️</div>
+              <h3 className="text-xl font-bold text-white">永久刪除旅程</h3>
+              <p className="text-sm text-zinc-400 mt-2 truncate">「{confirmDelete.trip.name}」</p>
+            </div>
+            {confirmDelete.stage === 1 ? (
+              <>
+                <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 text-xs text-red-300 space-y-1 mb-4">
+                  <div>⚠️ 所有消費記錄會消失</div>
+                  <div>⚠️ 所有旅伴資料會消失</div>
+                  <div>⚠️ 所有結算紀錄會消失</div>
+                  <div className="pt-1 text-red-400 font-bold">呢個動作完全冇得還原</div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => setConfirmDelete(null)} className="flex-1 py-3 bg-zinc-800 text-white rounded-xl font-medium">取消</button>
+                  <button onClick={() => setConfirmDelete({ ...confirmDelete, stage: 2 })} className="flex-1 py-3 bg-red-500/20 text-red-400 rounded-xl font-medium">我明白，繼續</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="bg-red-500/20 border border-red-500/50 rounded-xl p-3 text-sm text-white text-center mb-4">
+                  最後確認：真係要刪除「{confirmDelete.trip.name}」嗎？
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => setConfirmDelete(null)} disabled={deleting} className="flex-1 py-3 bg-zinc-800 text-white rounded-xl font-medium disabled:opacity-50">取消</button>
+                  <button onClick={() => deleteTripPermanent(confirmDelete.trip)} disabled={deleting} className="flex-1 py-3 bg-red-500 text-white rounded-xl font-bold disabled:opacity-50">
+                    {deleting ? '刪除中…' : '🗑️ 確定刪除'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ========== OwnerSetup modal ==========
+function OwnerSetup({ ownerCtx, onClose }) {
+  const [mode, setMode] = useState(ownerCtx.ownerHash ? 'login' : 'create');
+  const [secret, setSecret] = useState('');
+  const [customSecret, setCustomSecret] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const handleCreate = async () => {
+    setBusy(true); setErr('');
+    try {
+      let newSecret = customSecret.trim();
+      if (!newSecret) { setErr('請輸入一個 Owner Secret'); setBusy(false); return; }
+      if (newSecret.length < 6) { setErr('Secret 至少 6 個字'); setBusy(false); return; }
+      if (ownerCtx.ownerHash) { setErr('已經有 Owner，請改用「我係 Owner，登入」'); setBusy(false); return; }
+      const hash = await sha256(newSecret);
+      const { db, doc, setDoc } = window.__firebase;
+      await setDoc(doc(db, 'trips', '_meta'), { ownerHash: hash, createdAt: Date.now() });
+      setLocalOwnerSecret(newSecret);
+      ownerCtx.setIsOwner(true);
+      onClose();
+    } catch (e) { setErr('建立失敗：' + (e?.message || e)); }
+    finally { setBusy(false); }
+  };
+
+  const handleLogin = async () => {
+    setBusy(true); setErr('');
+    try {
+      const trimmed = secret.trim();
+      if (!trimmed) { setErr('請輸入 Owner Secret'); setBusy(false); return; }
+      const hash = await sha256(trimmed);
+      if (hash !== ownerCtx.ownerHash) { setErr('Secret 唔對'); setBusy(false); return; }
+      setLocalOwnerSecret(trimmed);
+      ownerCtx.setIsOwner(true);
+      onClose();
+    } catch (e) { setErr('登入失敗：' + (e?.message || e)); }
+    finally { setBusy(false); }
+  };
+
+  const fillRandom = () => setCustomSecret(genOwnerSecret());
+
+  return (
+    <div className="fixed inset-0 bg-black/80 z-50 flex items-end backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-zinc-900 w-full rounded-t-3xl p-5 max-h-[92vh] overflow-y-auto border-t border-zinc-800 safe-bottom" onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-5">
+          <h2 className="text-xl font-bold text-white">🔑 Owner 設定</h2>
+          <button onClick={onClose} className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center"><IconX className="w-4 h-4 text-zinc-400" /></button>
+        </div>
+
+        {mode === 'create' && (
+          <div className="space-y-4">
+            <div className="bg-orange-500/10 border border-orange-500/30 rounded-xl p-3 text-xs text-orange-300 space-y-1">
+              <div className="font-bold">⚠️ 你會成為呢個網站嘅唯一 Owner</div>
+              <div>自己決定一個 Owner Secret。iPhone 登入都係用呢個 secret。朋友冇 secret 就只係朋友模式。</div>
+            </div>
+            <DarkField label="設定你嘅 Owner Secret（至少 6 字，建議 12 字以上）">
+              <input value={customSecret} onChange={e => setCustomSecret(e.target.value)} placeholder="例如：my-super-secret-2024" className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl outline-none focus:ring-2 ring-orange-500 placeholder-zinc-500 font-mono" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
+            </DarkField>
+            <button onClick={fillRandom} className="w-full py-2 text-xs bg-zinc-800 text-zinc-400 rounded-lg">🎲 幫我隨機生成一個</button>
+            <button onClick={handleCreate} disabled={busy} className="w-full py-4 bg-gradient-to-br from-orange-400 to-orange-600 text-white font-bold rounded-2xl disabled:opacity-50">
+              {busy ? '建立中…' : '成為 Owner'}
+            </button>
+            {err && <div className="text-xs text-red-400">{err}</div>}
+            <div className="text-[10px] text-zinc-500 text-center">記得將 secret 儲低（Notes / 1Password），iPhone 登入要用</div>
+          </div>
+        )}
+
+        {mode === 'login' && (
+          <div className="space-y-4">
+            <p className="text-sm text-zinc-400">貼你嘅 Owner Secret 嚟登入呢部裝置。</p>
+            <DarkField label="Owner Secret">
+              <input value={secret} onChange={e => setSecret(e.target.value)} placeholder="你喺 Mac set 嗰個 secret" className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl outline-none focus:ring-2 ring-orange-500 placeholder-zinc-500 font-mono" autoCorrect="off" autoCapitalize="off" spellCheck={false} />
+            </DarkField>
+            <button onClick={handleLogin} disabled={busy} className="w-full py-4 bg-gradient-to-br from-orange-400 to-orange-600 text-white font-bold rounded-2xl disabled:opacity-50">{busy ? '驗證中…' : '登入'}</button>
+            {err && <div className="text-xs text-red-400">{err}</div>}
+            <div className="text-[10px] text-zinc-500 text-center">忘咗 secret？喺第一部已 login 嘅裝置 → 設定 → 顯示 Owner Secret</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TripMetaEditor({ trip, onClose, onSave }) {
+  const [name, setName] = useState(trip?.name || '');
+  const [startDate, setStartDate] = useState(trip?.startDate || new Date().toISOString().split('T')[0]);
+  const [totalDays, setTotalDays] = useState(trip?.totalDays || 7);
+  const [fromCurrency, setFromCurrency] = useState(trip?.fromCurrency || 'JPY');
+  const [toCurrency, setToCurrency] = useState(trip?.toCurrency || 'HKD');
+  const [timezone, setTimezone] = useState(trip?.timezone || (typeof Intl !== 'undefined' ? Intl.DateTimeFormat().resolvedOptions().timeZone : 'Asia/Hong_Kong'));
+  const [showPicker, setShowPicker] = useState(null);
+
+  const handleSave = () => {
+    if (!name.trim()) { alert('請輸入旅程名稱'); return; }
+    onSave({ name: name.trim(), startDate, totalDays: parseInt(totalDays) || 1, fromCurrency, toCurrency, timezone });
+  };
+
+  const fromCur = CURRENCIES.find(c => c.code === fromCurrency);
+  const toCur = CURRENCIES.find(c => c.code === toCurrency);
+  const COMMON_TZ = ['Asia/Hong_Kong','Asia/Tokyo','Asia/Seoul','Asia/Singapore','Asia/Bangkok','Asia/Taipei','Asia/Shanghai','Europe/London','Europe/Paris','Europe/Berlin','America/New_York','America/Los_Angeles','Australia/Sydney'];
+
+  return (
+    <div className="fixed inset-0 bg-black/80 z-50 flex items-end backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-zinc-900 w-full rounded-t-3xl p-5 max-h-[92vh] overflow-y-auto border-t border-zinc-800 safe-bottom" onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-5">
+          <h2 className="text-xl font-bold text-white">{trip ? '編輯旅程' : '新增旅程'}</h2>
+          <button onClick={onClose} className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center"><IconX className="w-4 h-4 text-zinc-400" /></button>
+        </div>
+        <div className="space-y-4">
+          <DarkField label="旅程名稱"><input value={name} onChange={e => setName(e.target.value)} placeholder="例如：東京四日遊" className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl outline-none focus:ring-2 ring-orange-500 placeholder-zinc-500" /></DarkField>
+          <DarkField label="開始日期"><input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl outline-none focus:ring-2 ring-orange-500" style={{ colorScheme: 'dark' }} /></DarkField>
+          <DarkField label="總天數"><input type="number" value={totalDays} onChange={e => setTotalDays(e.target.value)} className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl outline-none focus:ring-2 ring-orange-500" /></DarkField>
+          <DarkField label="時區（用於每日 00:00 截數）">
+            <select value={timezone} onChange={e => setTimezone(e.target.value)} className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl outline-none focus:ring-2 ring-orange-500" style={{ colorScheme: 'dark' }}>
+              {!COMMON_TZ.includes(timezone) && <option value={timezone}>{timezone}</option>}
+              {COMMON_TZ.map(tz => <option key={tz} value={tz}>{tz}</option>)}
+            </select>
+          </DarkField>
+          <DarkField label="當地貨幣">
+            <button onClick={() => setShowPicker('from')} className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl flex items-center gap-2">
+              <span className="text-xl">{fromCur?.flag}</span><span className="flex-1 text-left">{fromCur?.code} · {fromCur?.name}</span><IconChevron className="w-4 h-4 text-zinc-500" />
+            </button>
+          </DarkField>
+          <DarkField label="結算貨幣">
+            <button onClick={() => setShowPicker('to')} className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl flex items-center gap-2">
+              <span className="text-xl">{toCur?.flag}</span><span className="flex-1 text-left">{toCur?.code} · {toCur?.name}</span><IconChevron className="w-4 h-4 text-zinc-500" />
+            </button>
+          </DarkField>
+          <button onClick={handleSave} className="w-full py-4 bg-gradient-to-br from-orange-400 to-orange-600 text-white font-bold rounded-2xl shadow-lg shadow-orange-500/20">{trip ? '儲存修改' : '新增旅程'}</button>
+        </div>
+      </div>
+      {showPicker && (
+        <CurrencyPicker current={showPicker === 'from' ? fromCurrency : toCurrency}
+          title={showPicker === 'from' ? '選擇當地貨幣' : '選擇結算貨幣'}
+          onClose={() => setShowPicker(null)}
+          onSelect={(code) => {
+            if (showPicker === 'from') setFromCurrency(code); else setToCurrency(code);
+            setShowPicker(null);
+          }} />
+      )}
+    </div>
+  );
+}
+
+// ========== TripApp：一個 trip 嘅主 UI ==========
+function TripApp({ tripId, online, ownerCtx, route }) {
+  const [tab, setTab] = useState('home');
+  const [showActivity, setShowActivity] = useState(false);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+  const [expenses, setExpenses] = useState([]);
+  const [members, setMembers] = useState([]);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [tripMeta, setTripMeta] = useState(null);
+  const [currentRate, setCurrentRate] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [identityId, setIdentityId] = useState(() => localStorage.getItem('identity:' + tripId) || '');
+  const [showDeleted, setShowDeleted] = useState(false);
+  const [accessChecking, setAccessChecking] = useState(true);
+  const [accessGranted, setAccessGranted] = useState(false);
+  const [accessError, setAccessError] = useState('');
+
+  // ========== Access control ==========
+  // 規則：
+  // 1. Owner → 一律 grant
+  // 2. 已 join 過呢個 trip → grant
+  // 3. URL 帶 valid invite token → grant + 加入 joinedTrips
+  // 4. 都唔係 → block
+  useEffect(() => {
+    let cancel = false;
+    (async () => {
+      setAccessChecking(true);
+      setAccessError('');
+      // 等 owner state 準備好
+      if (ownerCtx.ownerHash === null) return;
+      if (ownerCtx.isOwner) { setAccessGranted(true); setAccessChecking(false); return; }
+      const joined = getJoinedTrips();
+      if (joined.includes(tripId)) { setAccessGranted(true); setAccessChecking(false); return; }
+      // Check invite token
+      const token = route?.invite;
+      if (!token) {
+        // 仲有一個 fallback：如果根本未有 owner（owner doc 唔存在），俾任何人入（migration / first time）
+        if (!ownerCtx.ownerHash) { setAccessGranted(true); setAccessChecking(false); return; }
+        if (!cancel) { setAccessGranted(false); setAccessError('需要邀請連結先可以入呢個旅程'); setAccessChecking(false); }
+        return;
+      }
+      // verify token，retry 3 次應對 Firestore propagation 延遲
+      try {
+        const { db, doc, getDoc } = window.__firebase;
+        const fetchInvite = async () => {
+          for (let attempt = 0; attempt < 3; attempt++) {
+            if (cancel) return null;
+            const snap = await getDoc(doc(db, 'trips', tripId, 'invites', token));
+            if (snap.exists()) return snap;
+            if (attempt < 2) await new Promise(r => setTimeout(r, 1500));
+          }
+          return null;
+        };
+        const inviteSnap = await fetchInvite();
+        if (cancel) return;
+        if (!inviteSnap) { setAccessGranted(false); setAccessError('邀請連結無效或已被刪除。如果連結啱啱發出，請等幾秒再試'); setAccessChecking(false); return; }
+        const data = inviteSnap.data();
+        if (data.expiresAt && data.expiresAt < Date.now()) { setAccessGranted(false); setAccessError('邀請連結已過期'); setAccessChecking(false); return; }
+        // valid — record join
+        addJoinedTrip(tripId);
+        try { setRoute({ kind: 'trip', tripId }); } catch (e) {}
+        setAccessGranted(true); setAccessChecking(false);
+      } catch (e) {
+        if (!cancel) { setAccessGranted(false); setAccessError('驗證失敗：' + (e?.message || e)); setAccessChecking(false); }
+      }
+    })();
+    return () => { cancel = true; };
+  }, [tripId, ownerCtx.isOwner, ownerCtx.ownerHash, route?.invite]);
+
+  // Firestore subscriptions
+  useEffect(() => {
+    if (!accessGranted) return;
+    const { db, doc, collection, onSnapshot } = window.__firebase;
+    const expensesRef = collection(db, 'trips', tripId, 'expenses');
+    const membersRef = collection(db, 'trips', tripId, 'members');
+    const settingsDocRef = doc(db, 'trips', tripId, 'meta', 'settings');
+    const tripDocRef = doc(db, 'trips', tripId);
+
+    let loaded = 0;
+    const check = () => { loaded++; if (loaded >= 4) setLoading(false); };
+
+    const u1 = onSnapshot(expensesRef, (snap) => {
+      const list = [];
+      snap.forEach(d => list.push({ id: d.id, ...d.data() }));
+      list.sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt || 0) - (a.createdAt || 0));
+      setExpenses(list);
+      if (loaded < 4) check();
+    }, (err) => { console.error(err); if (loaded < 4) check(); });
+
+    const u2 = onSnapshot(membersRef, (snap) => {
+      const list = [];
+      snap.forEach(d => list.push({ id: d.id, ...d.data() }));
+      list.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+      setMembers(list);
+      if (loaded < 4) check();
+    }, (err) => { console.error(err); if (loaded < 4) check(); });
+
+    const u3 = onSnapshot(settingsDocRef, (snap) => {
+      if (snap.exists()) setSettings({ ...DEFAULT_SETTINGS, ...snap.data() });
+      if (loaded < 4) check();
+    }, (err) => { console.error(err); if (loaded < 4) check(); });
+
+    const u4 = onSnapshot(tripDocRef, (snap) => {
+      if (snap.exists()) setTripMeta({ id: tripId, ...snap.data() });
+      else setTripMeta(null);
+      if (loaded < 4) check();
+    }, (err) => { console.error(err); if (loaded < 4) check(); });
+
+    return () => { u1(); u2(); u3(); u4(); };
+  }, [tripId, accessGranted]);
+
+  // 當 trip meta 有 currency 時覆蓋 settings（trip meta 為準，設定頁舊欄位為舊兼容）
+  const effectiveSettings = tripMeta ? {
+    ...settings,
+    tripName:     tripMeta.name       || settings.tripName,
+    fromCurrency: tripMeta.fromCurrency || settings.fromCurrency,
+    toCurrency:   tripMeta.toCurrency   || settings.toCurrency,
+    startDate:    tripMeta.startDate    || settings.startDate,
+    totalDays:    tripMeta.totalDays    || settings.totalDays,
+    timezone:     tripMeta.timezone     || settings.timezone || 'Asia/Hong_Kong',
+  } : settings;
+
+  useEffect(() => {
+    if (loading) return;
+    refreshRate();
+  }, [effectiveSettings.fromCurrency, effectiveSettings.toCurrency, loading]);
+
+  const refreshRate = async () => {
+    if (effectiveSettings.fromCurrency === effectiveSettings.toCurrency) {
+      setCurrentRate({ rate: 1, timestamp: Date.now() });
+      return;
+    }
+    setRefreshing(true);
+    const r = await fetchExchangeRate(effectiveSettings.fromCurrency, effectiveSettings.toCurrency);
+    if (r) setCurrentRate(r);
+    setRefreshing(false);
+  };
+
+  // ========== 日結快照 catch-up ==========
+  // 喺 trip timezone 計今日嘅 YYYY-MM-DD，再對比 snapshots collection
+  // 由 trip startDate 開始，每日寫一個 snapshot，跳過已存在嘅
+  // 注意：呢個只係前端 trigger，唔保證 atomic（多人開時可能重覆寫，但 setDoc by id 會 overwrite，無問題）
+  useEffect(() => {
+    if (loading || !tripMeta || !effectiveSettings.startDate) return;
+    const tz = effectiveSettings.timezone;
+    const fmtDateInTZ = (d) => {
+      try {
+        const f = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+        return f.format(d);
+      } catch { return d.toISOString().split('T')[0]; }
+    };
+    const today = fmtDateInTZ(new Date());
+    const start = effectiveSettings.startDate;
+    if (today < start) return;
+
+    let cancel = false;
+    (async () => {
+      try {
+        const { db, doc, getDoc, setDoc, collection, onSnapshot } = window.__firebase;
+        // Read existing snapshot ids 一次
+        const existingIds = await new Promise((resolve, reject) => {
+          let done = false;
+          const unsub = onSnapshot(collection(db, 'trips', tripId, 'snapshots'), (snap) => {
+            if (done) return;
+            done = true;
+            const ids = new Set();
+            snap.forEach(d => ids.add(d.id));
+            unsub();
+            resolve(ids);
+          }, reject);
+        });
+
+        // Build days from start to yesterday（今日未完，唔截）
+        const days = [];
+        let cur = new Date(start + 'T00:00:00Z');
+        const stop = new Date(today + 'T00:00:00Z');
+        while (cur < stop) {
+          days.push(fmtDateInTZ(cur));
+          cur = new Date(cur.getTime() + 24*60*60*1000);
+        }
+        const missing = days.filter(d => !existingIds.has(d));
+        if (missing.length === 0 || cancel) return;
+
+        // 計每日嘅 cumulative：用 expense 嘅 date <= snapshotDay 嘅 expenses
+        for (const d of missing) {
+          if (cancel) return;
+          const upTo = expenses.filter(e => !e.deleted && e.date && e.date <= d);
+          const totalAll = upTo.reduce((s, e) => s + (e.amount || 0), 0);
+          const balances = calculateBalances(upTo, members);
+          const memberSpent = calculateMemberSpending(upTo, members);
+          await setDoc(doc(db, 'trips', tripId, 'snapshots', d), {
+            date: d,
+            createdAt: Date.now(),
+            timezone: tz,
+            totalAll,
+            balances,
+            memberSpent,
+            expenseCount: upTo.length,
+          });
+        }
+      } catch (e) { console.warn('snapshot catch-up failed:', e); }
+    })();
+    return () => { cancel = true; };
+  }, [loading, tripMeta, effectiveSettings.startDate, effectiveSettings.timezone, expenses.length, members.length, tripId]);
+
+  // ========== 身分 + 權限 ==========
+  const me = members.find(m => m.id === identityId) || null;
+  const myRole = me?.role || null;
+  const isAdmin  = myRole === 'admin';
+  const isEditor = myRole === 'admin' || myRole === 'editor';
+  const isViewer = myRole === 'viewer';
+
+  const pickIdentity = (memberId) => {
+    localStorage.setItem('identity:' + tripId, memberId);
+    addJoinedTrip(tripId);
+    setIdentityId(memberId);
+  };
+  const logoutIdentity = () => {
+    localStorage.removeItem('identity:' + tripId);
+    setIdentityId('');
+  };
+
+  // 新增自己做旅伴（若係第一個 → 自動 Admin）
+  const joinAsNewMember = async ({ name, avatar, color }) => {
+    const { db, doc, setDoc, collection } = window.__firebase;
+    const membersRef = collection(db, 'trips', tripId, 'members');
+    const id = genId();
+    const role = members.length === 0 ? 'admin' : 'editor';
+    await setDoc(doc(membersRef, id), {
+      name: name.trim(),
+      avatar: avatar || '',
+      color: color || '#FF8C00',
+      role,
+      ownerClaimed: !!ownerCtx.isOwner, // Owner 建立嘅 identity 鎖起，朋友唔俾揀
+      createdAt: Date.now(),
+    });
+    pickIdentity(id);
+  };
+
+  // ========== Write actions（帶 actorId + 權限 check） ==========
+  const requireEditor = () => {
+    if (!isEditor) { alert('你係 Viewer，冇權限修改'); return false; }
+    return true;
+  };
+  const requireAdmin = () => {
+    if (!isAdmin) { alert('只有 Admin 可以做呢個動作'); return false; }
+    return true;
+  };
+
+  const upsertExpense = async (expense) => {
+    if (!requireEditor()) return;
+    const { db, doc, getDoc, setDoc, collection } = window.__firebase;
+    const expensesRef = collection(db, 'trips', tripId, 'expenses');
+    const id = expense.id || genId();
+    // 樂觀鎖：edit 模式下，確保 server 嘅 updatedAt 同我攞落嚟嗰陣一樣
+    if (expense.id && expense.updatedAt) {
+      try {
+        const snap = await getDoc(doc(expensesRef, id));
+        if (snap.exists()) {
+          const serverUpdatedAt = snap.data().updatedAt || 0;
+          const updatedBy = snap.data().updatedBy;
+          if (serverUpdatedAt > expense.updatedAt) {
+            const editor = members.find(m => m.id === updatedBy);
+            const editorName = editor ? editor.name : '某人';
+            alert(`⚠️ 衝突：呢筆消費啱啱俾 ${editorName} 改咗，請 reload 後再改。`);
+            return false;
+          }
+        }
+      } catch (e) { /* 讀失敗就放生，避免 block 用戶 */ }
+    }
+    const data = {
+      ...expense,
+      deleted:   expense.deleted || false,
+      createdAt: expense.createdAt || Date.now(),
+      createdBy: expense.createdBy || identityId || null,
+      updatedAt: Date.now(),
+      updatedBy: identityId || null,
+    };
+    delete data.id;
+    try { await setDoc(doc(expensesRef, id), data); return true; } catch (e) { alert('儲存失敗：' + e.message); return false; }
+  };
+
+  const deleteExpense = async (id) => {
+    // Round 1：soft delete（保留資料，可還原）
+    if (!requireEditor()) return;
+    const { db, doc, setDoc, collection } = window.__firebase;
+    const expensesRef = collection(db, 'trips', tripId, 'expenses');
+    const existing = expenses.find(e => e.id === id);
+    if (!existing) return;
+    try {
+      await setDoc(doc(expensesRef, id), {
+        ...existing,
+        deleted: true,
+        deletedAt: Date.now(),
+        deletedBy: identityId || null,
+        updatedAt: Date.now(),
+      }, { merge: true });
+    } catch (e) { alert('刪除失敗：' + e.message); }
+  };
+
+  const restoreExpense = async (id) => {
+    if (!requireEditor()) return;
+    const { db, doc, setDoc, collection } = window.__firebase;
+    const expensesRef = collection(db, 'trips', tripId, 'expenses');
+    try {
+      await setDoc(doc(expensesRef, id), {
+        deleted: false, deletedAt: null, deletedBy: null,
+        updatedAt: Date.now(), updatedBy: identityId || null,
+      }, { merge: true });
+    } catch (e) { alert('還原失敗：' + e.message); }
+  };
+
+  // 留言：改 expense.comments 但唔 touch updatedAt 以免污染活動記錄
+  const addComment = async (expenseId, text) => {
+    if (!identityId) { alert('請先揀身分'); return; }
+    const { db, doc, setDoc, collection } = window.__firebase;
+    const expensesRef = collection(db, 'trips', tripId, 'expenses');
+    const existing = expenses.find(e => e.id === expenseId);
+    if (!existing) return;
+    const comment = {
+      id: genId(),
+      authorId: identityId,
+      text: text.trim(),
+      createdAt: Date.now(),
+    };
+    const comments = [...(existing.comments || []), comment];
+    try {
+      await setDoc(doc(expensesRef, expenseId), { comments }, { merge: true });
+    } catch (e) { alert('留言失敗：' + e.message); }
+  };
+
+  const deleteComment = async (expenseId, commentId) => {
+    const { db, doc, setDoc, collection } = window.__firebase;
+    const expensesRef = collection(db, 'trips', tripId, 'expenses');
+    const existing = expenses.find(e => e.id === expenseId);
+    if (!existing) return;
+    const target = (existing.comments || []).find(c => c.id === commentId);
+    if (!target) return;
+    // 只可刪自己嘅留言（除非係 admin）
+    if (target.authorId !== identityId && !isAdmin) { alert('只可以刪自己嘅留言'); return; }
+    const comments = (existing.comments || []).filter(c => c.id !== commentId);
+    try {
+      await setDoc(doc(expensesRef, expenseId), { comments }, { merge: true });
+    } catch (e) { alert('刪除留言失敗：' + e.message); }
+  };
+
+  const addMultipleExpenses = async (items) => {
+    if (!requireEditor()) return;
+    const { db, doc, setDoc, collection } = window.__firebase;
+    const expensesRef = collection(db, 'trips', tripId, 'expenses');
+    try {
+      await Promise.all(items.map(item => {
+        const id = genId();
+        const { id: _, ...data } = item;
+        return setDoc(doc(expensesRef, id), {
+          ...data,
+          deleted: false,
+          createdAt: Date.now(),
+          createdBy: identityId || null,
+          updatedAt: Date.now(),
+          updatedBy: identityId || null,
+        });
+      }));
+    } catch (e) { alert('儲存失敗：' + e.message); }
+  };
+
+  const upsertMember = async (member) => {
+    // 任何人可改自己（頭像、顏色、名），但 role 只有 admin 改得
+    const isSelf = member.id && member.id === identityId;
+    const roleChanged = member.id && members.find(m => m.id === member.id)?.role !== member.role;
+    if (!isSelf && !isEditor) { alert('冇權限'); return; }
+    if (roleChanged && !isAdmin) { alert('只有 Admin 可以改角色'); return; }
+    if (!member.id && !isAdmin) { alert('只有 Admin 可以新增旅伴'); return; }
+
+    const { db, doc, setDoc, collection } = window.__firebase;
+    const membersRef = collection(db, 'trips', tripId, 'members');
+    const id = member.id || genId();
+    const data = { ...member, createdAt: member.createdAt || Date.now() };
+    delete data.id;
+    try { await setDoc(doc(membersRef, id), data); } catch (e) { alert(e.message); }
+  };
+
+  const deleteMember = async (id) => {
+    if (!requireAdmin()) return;
+    if (id === identityId) { alert('唔可以刪除自己'); return; }
+    const target = members.find(m => m.id === id);
+    if (target?.role === 'admin' && members.filter(m => m.role === 'admin').length <= 1) {
+      alert('必須至少保留一個 Admin');
+      return;
+    }
+    const { db, doc, deleteDoc, collection } = window.__firebase;
+    const membersRef = collection(db, 'trips', tripId, 'members');
+    try { await deleteDoc(doc(membersRef, id)); } catch (e) {}
+  };
+
+  const saveSettings = async (next) => {
+    if (!requireEditor()) return;
+    const { db, doc, setDoc } = window.__firebase;
+    const ref = doc(db, 'trips', tripId, 'meta', 'settings');
+    try { await setDoc(ref, next); } catch (e) {}
+  };
+
+  const saveTripMeta = async (patch) => {
+    if (!requireAdmin()) return;
+    const { db, doc, setDoc } = window.__firebase;
+    try {
+      await setDoc(doc(db, 'trips', tripId), { ...patch, updatedAt: Date.now() }, { merge: true });
+    } catch (e) { alert('更新失敗：' + e.message); }
+  };
+
+  if (accessChecking) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-black">
+        <div className="flex flex-col items-center gap-3">
+          <IconLoader className="w-8 h-8 animate-spin text-orange-500" />
+          <div className="text-zinc-500 text-xs">驗證權限中...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!accessGranted) {
+    return (
+      <div className="h-screen w-full flex flex-col items-center justify-center bg-black p-6 text-center max-w-md mx-auto">
+        <div className="text-5xl mb-4">🔒</div>
+        <h2 className="text-xl font-bold text-white mb-2">無法進入呢個旅程</h2>
+        <p className="text-sm text-zinc-400 mb-6 whitespace-pre-wrap">{accessError || '需要邀請連結'}</p>
+        <div className="flex flex-col gap-2 w-full max-w-xs">
+          <button onClick={() => window.location.reload()} className="px-6 py-3 bg-orange-500 text-white rounded-xl font-medium">🔄 再試一次</button>
+          <button onClick={() => setRoute({ kind: 'list' })} className="px-6 py-2 text-zinc-400 text-sm">返主頁</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-black">
+        <div className="flex flex-col items-center gap-3">
+          <IconLoader className="w-8 h-8 animate-spin text-orange-500" />
+          <div className="text-zinc-500 text-xs">載入旅程中...</div>
+        </div>
+      </div>
+    );
+  }
+
+  // Identity gate：未選身分 → 彈揀人
+  if (!me) {
+    return <IdentityGate tripId={tripId} tripMeta={tripMeta} members={members} onPick={pickIdentity} onJoin={joinAsNewMember} isOwner={ownerCtx.isOwner} />;
+  }
+
+  // 可視 expenses（排除 deleted，除非明確顯示）
+  const visibleExpenses = showDeleted ? expenses : expenses.filter(e => !e.deleted);
+
+  const ctx = {
+    tripId, tripMeta,
+    expenses: visibleExpenses,
+    allExpenses: expenses,
+    members,
+    settings: effectiveSettings,
+    currentRate, refreshing, online,
+    me, myRole, isAdmin, isEditor, isViewer,
+    isOwner: ownerCtx.isOwner,
+    ownerCtx,
+    showDeleted, setShowDeleted,
+    upsertExpense, deleteExpense, restoreExpense, addMultipleExpenses,
+    addComment, deleteComment,
+    upsertMember, deleteMember, saveSettings, saveTripMeta,
+    refreshRate, logoutIdentity,
+    openActivity: () => setShowActivity(true),
+    openInvite: () => setShowInviteModal(true),
+  };
+
+  return (
+    <div className="h-screen w-full bg-black flex flex-col max-w-md mx-auto relative overflow-hidden">
+      <div className="flex-1 overflow-y-auto pb-36">
+        {tab === 'home' && <HomeTab {...ctx} setTab={setTab} />}
+        {tab === 'records' && <RecordsTab {...ctx} />}
+        {tab === 'scan' && <ScanTab {...ctx} onDone={() => setTab('records')} />}
+        {tab === 'stats' && <StatsTab {...ctx} />}
+        {tab === 'settings' && <SettingsTab {...ctx} />}
+      </div>
+      <BottomNav tab={tab} setTab={setTab} />
+      {showActivity && <ActivityLog allExpenses={expenses} members={members} settings={effectiveSettings} onClose={() => setShowActivity(false)} />}
+      {showInviteModal && <InviteManager tripId={tripId} tripName={effectiveSettings.tripName} onClose={() => setShowInviteModal(false)} isOwner={ownerCtx.isOwner} />}
+    </div>
+  );
+}
+
+// ========== IdentityGate ==========
+function IdentityGate({ tripId, tripMeta, members, onPick, onJoin, isOwner }) {
+  // 朋友唔可以揀 Owner 建立嘅 identity
+  const pickableMembers = isOwner ? members : members.filter(m => !m.ownerClaimed);
+  const [mode, setMode] = useState(pickableMembers.length === 0 ? 'join' : 'pick');
+  const [name, setName] = useState('');
+  const [avatar, setAvatar] = useState('');
+  const usedColors = new Set(members.map(m => m.color).filter(Boolean));
+  // 預設揀一個未用過嘅色
+  const defaultColor = PRESET_COLORS.find(c => !usedColors.has(c)) || PRESET_COLORS[0];
+  const [color, setColor] = useState(defaultColor);
+  const fileRef = useRef(null);
+
+  const handleAvatar = (file) => {
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const max = 240;
+        const size = Math.min(img.width, img.height);
+        const sx = (img.width - size) / 2;
+        const sy = (img.height - size) / 2;
+        canvas.width = max; canvas.height = max;
+        canvas.getContext('2d').drawImage(img, sx, sy, size, size, 0, 0, max, max);
+        setAvatar(canvas.toDataURL('image/jpeg', 0.75));
+      };
+      img.src = r.result;
+    };
+    r.readAsDataURL(file);
+  };
+
+  const colorUsed = usedColors.has(color);
+
+  const handleJoin = () => {
+    if (!name.trim()) { alert('請輸入名字'); return; }
+    if (colorUsed) { alert('呢個顏色已經有人用，請揀另一個唔同嘅顏色'); return; }
+    onJoin({ name, avatar, color });
+  };
+
+  const isFirst = members.length === 0;
+
+  return (
+    <div className="h-screen w-full bg-black flex flex-col max-w-md mx-auto overflow-hidden">
+      <div className="flex-1 overflow-y-auto">
+        <div className="px-5 safe-top pb-6 space-y-5">
+          {isOwner && (
+            <button onClick={() => setRoute({ kind: 'list' })} className="text-zinc-500 text-xs flex items-center gap-1">
+              <IconChevron className="w-3 h-3 rotate-180" /> 返回旅程列表
+            </button>
+          )}
+          <div>
+            <div className="text-xs text-zinc-500 uppercase tracking-widest mb-1">歡迎加入</div>
+            <h1 className="text-3xl font-bold text-white">{tripMeta?.name || '旅程'}</h1>
+            <p className="text-sm text-zinc-500 mt-2">{isFirst ? '你係第一個加入嘅人，會自動成為 Admin' : pickableMembers.length === 0 ? '請建立你嘅身分' : '請揀你係邊個'}</p>
+          </div>
+
+          {!isFirst && pickableMembers.length > 0 && (
+            <div className="bg-zinc-950 border border-zinc-900 rounded-xl p-1 flex">
+              <button onClick={() => setMode('pick')} className={`flex-1 py-2 rounded-lg text-sm ${mode === 'pick' ? 'bg-orange-500 text-white font-medium' : 'text-zinc-500'}`}>我係現有旅伴</button>
+              <button onClick={() => setMode('join')} className={`flex-1 py-2 rounded-lg text-sm ${mode === 'join' ? 'bg-orange-500 text-white font-medium' : 'text-zinc-500'}`}>我係新人</button>
+            </div>
+          )}
+
+          {mode === 'pick' && pickableMembers.length > 0 && (
+            <div className="space-y-2">
+              {pickableMembers.map(m => (
+                <button key={m.id} onClick={() => onPick(m.id)} className="w-full flex items-center gap-3 p-3 bg-zinc-950 border border-zinc-900 rounded-2xl hover:bg-zinc-900">
+                  <MemberAvatar member={m} size={44} />
+                  <div className="flex-1 text-left">
+                    <div className="text-white font-medium" style={{ color: ensureReadableColor(m.color) }}>{m.name}</div>
+                    <div className="text-[10px] text-zinc-500">{ROLES[m.role || 'editor']?.name || '—'}</div>
+                  </div>
+                  <IconChevron className="w-4 h-4 text-zinc-600" />
+                </button>
+              ))}
+            </div>
+          )}
+
+          {mode === 'join' && (
+            <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-5 space-y-4">
+              <div className="flex justify-center">
+                <button onClick={() => fileRef.current?.click()} className="relative">
+                  {avatar ? (
+                    <img src={avatar} className="w-24 h-24 rounded-full object-cover ring-4 ring-zinc-800" alt="" />
+                  ) : (
+                    <div className="w-24 h-24 rounded-full flex items-center justify-center text-4xl font-bold text-white ring-4 ring-zinc-800" style={{ backgroundColor: color }}>{name[0] || '?'}</div>
+                  )}
+                  <div className="absolute bottom-0 right-0 w-8 h-8 bg-orange-500 rounded-full flex items-center justify-center shadow-lg"><IconCamera className="w-4 h-4 text-white" /></div>
+                </button>
+                <input ref={fileRef} type="file" accept="image/*" onChange={e => handleAvatar(e.target.files?.[0])} className="hidden" />
+              </div>
+              <DarkField label="你嘅名字"><input value={name} onChange={e => setName(e.target.value)} placeholder="例如：Ricky" className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl outline-none focus:ring-2 ring-orange-500" /></DarkField>
+              <DarkField label="顏色（必須同其他人唔同）">
+                <div className="flex gap-2 flex-wrap">
+                  {PRESET_COLORS.map(c => {
+                    const used = usedColors.has(c);
+                    const disabled = used && c !== color;
+                    return (
+                      <button key={c} onClick={() => { if (!disabled) setColor(c); }} disabled={disabled} className={`relative w-9 h-9 rounded-full ${color === c ? 'ring-2 ring-white scale-110' : ''} ${disabled ? 'opacity-30' : ''}`} style={{ backgroundColor: c }}>
+                        {disabled && <span className="absolute inset-0 flex items-center justify-center text-[8px] text-white">✕</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+                {colorUsed && <p className="text-[11px] text-red-400 mt-2">⚠️ 呢個顏色已被人使用，請揀另一個</p>}
+              </DarkField>
+              <button onClick={handleJoin} disabled={colorUsed || !name.trim()} className="w-full py-4 bg-gradient-to-br from-orange-400 to-orange-600 text-white font-bold rounded-2xl shadow-lg shadow-orange-500/20 disabled:opacity-40 disabled:cursor-not-allowed">
+                {isFirst ? '成為 Admin 並進入' : '加入旅程'}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ========== BottomNav ==========
+// ========== ActivityLog ==========
+// ========== InviteManager ==========
+function InviteManager({ tripId, tripName, onClose, isOwner }) {
+  const [invites, setInvites] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [chosenExpiry, setChosenExpiry] = useState('24h');
+  const [toast, setToast] = useState('');
+
+  useEffect(() => {
+    const { db, collection, onSnapshot } = window.__firebase;
+    const unsub = onSnapshot(collection(db, 'trips', tripId, 'invites'), (snap) => {
+      const list = [];
+      snap.forEach(d => list.push({ id: d.id, ...d.data() }));
+      list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      setInvites(list);
+      setLoading(false);
+    }, () => setLoading(false));
+    return () => unsub();
+  }, [tripId]);
+
+  const computeExpires = (key) => {
+    const now = Date.now();
+    if (key === '1h') return now + 60*60*1000;
+    if (key === '24h') return now + 24*60*60*1000;
+    if (key === '7d') return now + 7*24*60*60*1000;
+    return null; // 永久
+  };
+
+  const handleCreate = async () => {
+    if (!isOwner) { alert('只有 Owner 可以建邀請'); return; }
+    setCreating(true);
+    try {
+      const token = genId() + genId().slice(0, 6);
+      const { db, doc, setDoc } = window.__firebase;
+      await setDoc(doc(db, 'trips', tripId, 'invites', token), {
+        createdAt: Date.now(),
+        expiresAt: computeExpires(chosenExpiry),
+        expiryKey: chosenExpiry,
+      });
+    } catch (e) { alert('建立失敗：' + (e?.message || e)); }
+    finally { setCreating(false); }
+  };
+
+  const handleDelete = async (token) => {
+    if (!confirm('刪除呢個邀請連結？已用過嘅人唔受影響，但連結會即刻失效')) return;
+    const { db, doc, deleteDoc } = window.__firebase;
+    try { await deleteDoc(doc(db, 'trips', tripId, 'invites', token)); } catch (e) {}
+  };
+
+  const buildUrl = (token) => `${window.location.origin}${window.location.pathname}#/trip/${tripId}/invite/${token}`;
+  const qrUrl = (url) => `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(url)}&bgcolor=18-18-18&color=ffffff`;
+
+  const handleCopy = async (token) => {
+    try { await navigator.clipboard.writeText(buildUrl(token)); setToast('連結已複製 ✓'); setTimeout(() => setToast(''), 2000); }
+    catch (e) { alert('複製失敗'); }
+  };
+
+  const handleShareInvite = async (token) => {
+    const url = buildUrl(token);
+    try {
+      if (navigator.share) await navigator.share({ title: tripName || '旅程邀請', text: '一齊記帳：' + (tripName || ''), url });
+      else { await navigator.clipboard.writeText(url); setToast('連結已複製 ✓'); setTimeout(() => setToast(''), 2000); }
+    } catch (e) {}
+  };
+
+  const fmtTime = (ts) => {
+    if (!ts) return '永久';
+    const d = new Date(ts);
+    const now = new Date();
+    const diff = ts - now;
+    if (diff < 0) return '已過期';
+    return d.toLocaleString('zh-HK', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black z-50 flex flex-col max-w-md mx-auto">
+      <div className="safe-top px-5 pt-4 pb-3 border-b border-zinc-900 flex items-center justify-between">
+        <h2 className="text-xl font-bold text-white">📲 邀請連結</h2>
+        <button onClick={onClose} className="w-9 h-9 rounded-full bg-zinc-900 flex items-center justify-center"><IconX className="w-4 h-4 text-zinc-400" /></button>
+      </div>
+      <div className="flex-1 overflow-y-auto px-5 py-3 safe-bottom space-y-4">
+        {isOwner && (
+          <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4 space-y-3">
+            <DarkField label="有效期">
+              <div className="grid grid-cols-4 gap-2">
+                {[
+                  { k: '1h', l: '1 小時' },
+                  { k: '24h', l: '24 小時' },
+                  { k: '7d', l: '7 日' },
+                  { k: 'never', l: '永久' },
+                ].map(o => (
+                  <button key={o.k} onClick={() => setChosenExpiry(o.k)} className={`py-2 rounded-lg text-xs ${chosenExpiry === o.k ? 'bg-orange-500 text-white font-medium' : 'bg-zinc-800 text-zinc-400'}`}>{o.l}</button>
+                ))}
+              </div>
+            </DarkField>
+            <button onClick={handleCreate} disabled={creating} className="w-full py-3 bg-gradient-to-br from-orange-400 to-orange-600 text-white rounded-xl font-medium disabled:opacity-50">
+              {creating ? '生成中…' : '＋ 生成邀請連結'}
+            </button>
+          </div>
+        )}
+
+        {loading ? <div className="text-center py-6"><IconLoader className="w-5 h-5 animate-spin inline text-orange-500" /></div>
+          : invites.length === 0 ? <div className="text-center py-8 text-zinc-500 text-sm">{isOwner ? '未有邀請連結' : '⚠️ 只有 Owner 可以建邀請連結'}</div>
+          : (
+            <div className="space-y-3">
+              {invites.map(inv => {
+                const expired = inv.expiresAt && inv.expiresAt < Date.now();
+                const url = buildUrl(inv.id);
+                return (
+                  <div key={inv.id} className={`bg-zinc-950 border rounded-2xl p-4 space-y-3 ${expired ? 'border-red-500/30 opacity-60' : 'border-zinc-900'}`}>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-xs text-zinc-500">建立 {new Date(inv.createdAt || 0).toLocaleString('zh-HK', { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit' })}</div>
+                        <div className={`text-sm font-medium ${expired ? 'text-red-400' : 'text-orange-400'}`}>{expired ? '已過期' : `有效到 ${fmtTime(inv.expiresAt)}`}</div>
+                      </div>
+                      {isOwner && <button onClick={() => handleDelete(inv.id)} className="text-zinc-500 p-1.5"><IconTrash className="w-4 h-4" /></button>}
+                    </div>
+                    {!expired && (
+                      <>
+                        <div className="bg-white rounded-xl p-2 flex justify-center">
+                          <img src={qrUrl(url)} alt="QR" className="w-44 h-44" />
+                        </div>
+                        <div className="text-[10px] text-zinc-500 break-all bg-zinc-900 rounded p-2">{url}</div>
+                        <div className="flex gap-2">
+                          <button onClick={() => handleCopy(inv.id)} className="flex-1 py-2 bg-zinc-800 text-white rounded-lg text-xs">📋 複製</button>
+                          <button onClick={() => handleShareInvite(inv.id)} className="flex-1 py-2 bg-orange-500 text-white rounded-lg text-xs">📤 分享</button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+      </div>
+      {toast && <div className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-zinc-800 text-white text-sm px-4 py-2 rounded-full shadow-lg">{toast}</div>}
+    </div>
+  );
+}
+
+function ActivityLog({ allExpenses, members, settings, onClose }) {
+  // Build event list from expenses (create/update/delete/restore inferred from timestamps)
+  const events = [];
+  (allExpenses || []).forEach(exp => {
+    // create
+    if (exp.createdAt) {
+      events.push({
+        ts: exp.createdAt,
+        actorId: exp.createdBy || null,
+        kind: 'create',
+        exp,
+      });
+    }
+    // delete (if currently deleted)
+    if (exp.deleted && exp.deletedAt) {
+      events.push({
+        ts: exp.deletedAt,
+        actorId: exp.deletedBy || null,
+        kind: 'delete',
+        exp,
+      });
+    }
+    // update: 若 updatedAt > createdAt 而且唔係剛剛 created（差距 > 2s）
+    if (exp.updatedAt && exp.createdAt && exp.updatedAt - exp.createdAt > 2000) {
+      // 避免同 delete event 重覆
+      if (!exp.deleted || (exp.deletedAt && Math.abs(exp.updatedAt - exp.deletedAt) > 2000)) {
+        events.push({
+          ts: exp.updatedAt,
+          actorId: exp.updatedBy || null,
+          kind: exp.deleted ? 'restore-or-edit' : 'update',
+          exp,
+        });
+      }
+    }
+  });
+  events.sort((a, b) => b.ts - a.ts);
+
+  const KIND_LABEL = {
+    create: { label: '新增', emoji: '➕', color: 'text-green-400' },
+    update: { label: '修改', emoji: '✏️', color: 'text-blue-400' },
+    delete: { label: '刪除', emoji: '🗑️', color: 'text-red-400' },
+    'restore-or-edit': { label: '修改', emoji: '✏️', color: 'text-blue-400' },
+  };
+
+  const fmtTime = (ts) => {
+    const d = new Date(ts);
+    return `${d.getMonth()+1}/${d.getDate()} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black z-50 flex flex-col max-w-md mx-auto">
+      <div className="safe-top px-5 pt-4 pb-3 border-b border-zinc-900 flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold text-white">📜 活動記錄</h2>
+          <div className="text-[11px] text-zinc-500">共 {events.length} 條</div>
+        </div>
+        <button onClick={onClose} className="w-9 h-9 rounded-full bg-zinc-900 flex items-center justify-center"><IconX className="w-4 h-4 text-zinc-400" /></button>
+      </div>
+      <div className="flex-1 overflow-y-auto px-5 py-3 safe-bottom">
+        {events.length === 0 ? (
+          <div className="text-center py-12 text-zinc-500 text-sm">冇活動記錄</div>
+        ) : (
+          <div className="space-y-2">
+            {events.map((ev, idx) => {
+              const actor = members.find(m => m.id === ev.actorId);
+              const label = KIND_LABEL[ev.kind];
+              const cat = CATEGORIES.find(c => c.id === ev.exp.category);
+              return (
+                <div key={idx} className="bg-zinc-950 border border-zinc-900 rounded-2xl p-3">
+                  <div className="flex items-start gap-2">
+                    <span className="text-lg flex-shrink-0">{label?.emoji || '•'}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {actor ? (
+                          <span className="text-sm font-medium" style={{ color: ensureReadableColor(actor.color) }}>{actor.name}</span>
+                        ) : (
+                          <span className="text-sm text-zinc-500">系統</span>
+                        )}
+                        <span className={`text-xs ${label?.color || 'text-zinc-400'}`}>{label?.label}</span>
+                        <span className="text-xs text-zinc-500">·</span>
+                        <span className="text-[10px]">{cat?.emoji}</span>
+                        <span className="text-xs text-white truncate">{ev.exp.name}</span>
+                      </div>
+                      <div className="text-[10px] text-zinc-500 mt-0.5">
+                        {formatMoney(ev.exp.amount, settings.fromCurrency)} · {fmtTime(ev.ts)}
+                        {ev.exp.deleted && ev.kind !== 'delete' && <span className="text-red-400 ml-1">（呢筆而家已刪除）</span>}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function BottomNav({ tab, setTab }) {
+  const items = [
+    { id: 'home', icon: IconHome, label: '首頁' },
+    { id: 'records', icon: IconList, label: '紀錄' },
+    { id: 'scan', icon: IconCamera, label: '掃描', center: true },
+    { id: 'stats', icon: IconChart, label: '統計' },
+    { id: 'settings', icon: IconSettings, label: '設定' },
+  ];
+  return (
+    <div className="absolute bottom-0 left-0 right-0 bg-zinc-950 border-t border-zinc-900 flex justify-around items-center py-2 safe-bottom z-40">
+      {items.map(it => {
+        const IconEl = it.icon;
+        const active = tab === it.id;
+        if (it.center) {
+          return (
+            <button key={it.id} onClick={() => setTab(it.id)}
+              className="relative -mt-6 w-14 h-14 bg-gradient-to-br from-orange-400 to-orange-600 rounded-full flex items-center justify-center shadow-lg shadow-orange-500/30">
+              <IconEl className="w-6 h-6 text-white" />
+            </button>
+          );
+        }
+        return (
+          <button key={it.id} onClick={() => setTab(it.id)} className="flex flex-col items-center gap-0.5 px-3 py-1">
+            <IconEl className={`w-5 h-5 ${active ? 'text-orange-500' : 'text-zinc-500'}`} />
+            <span className={`text-[10px] ${active ? 'text-orange-500 font-medium' : 'text-zinc-500'}`}>{it.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ========== MemberAvatar ==========
+function MemberAvatar({ member, size = 40, ring = false }) {
+  if (!member) return <div className="rounded-full bg-zinc-800 flex-shrink-0 flex items-center justify-center text-zinc-600" style={{ width: size, height: size }}>👤</div>;
+  if (member.avatar) return <img src={member.avatar} alt={member.name} className={`rounded-full object-cover flex-shrink-0 ${ring ? 'ring-2 ring-orange-500' : ''}`} style={{ width: size, height: size }} />;
+  const initial = member.name?.[0] || '?';
+  return <div className={`rounded-full flex-shrink-0 flex items-center justify-center text-white font-bold ${ring ? 'ring-2 ring-orange-500' : ''}`} style={{ width: size, height: size, backgroundColor: member.color || '#FF8C00', fontSize: size * 0.4 }}>{initial}</div>;
+}
+
+// ========== ExpenseCard ==========
+function ExpenseCard({ expense, members, settings, currentRate, onClick }) {
+  const cat = CATEGORIES.find(c => c.id === expense.category);
+  const paidBy = members.find(m => m.id === expense.paidBy);
+  const splitMembers = (expense.splitAmong || []).map(id => members.find(m => m.id === id)).filter(Boolean);
+  const isDeleted = !!expense.deleted;
+  const isPersonal = expense.txType === 'personal';
+  const isManual = expense.splitMode === 'manual';
+  return (
+    <button onClick={onClick} className={`w-full bg-zinc-950 border rounded-2xl p-3 flex items-center gap-3 text-left ${isDeleted ? 'opacity-40' : ''} ${isPersonal ? 'border-zinc-800' : 'border-zinc-900'}`}>
+      <div className="w-10 h-10 rounded-xl flex items-center justify-center text-lg flex-shrink-0" style={{ backgroundColor: cat?.color + '20' }}>{cat?.emoji}</div>
+      <div className="flex-1 min-w-0">
+        <div className={`text-white font-medium truncate text-sm flex items-center gap-1.5 ${isDeleted ? 'line-through' : ''}`}>
+          <span className="truncate">{expense.name}</span>
+          {isPersonal && <span className="text-[9px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded flex-shrink-0">個人</span>}
+          {isDeleted && <span className="text-[10px] text-zinc-500 no-underline">（已刪除）</span>}
+        </div>
+        <div className="flex items-center gap-1.5 mt-0.5">
+          {paidBy && <><MemberAvatar member={paidBy} size={16} /><span className="text-xs truncate" style={{ color: ensureReadableColor(paidBy.color) }}>{paidBy.name}</span></>}
+          {!isPersonal && splitMembers.length > 0 && splitMembers.length !== members.length && (<><span className="text-xs text-zinc-600">·</span><span className="text-xs text-zinc-500">分 {splitMembers.length} 人{isManual && '（手動）'}</span></>)}
+          {!isPersonal && isManual && splitMembers.length === members.length && (<><span className="text-xs text-zinc-600">·</span><span className="text-xs text-zinc-500">手動分</span></>)}
+          {expense.location && (<><span className="text-xs text-zinc-600">·</span><span className="text-xs text-zinc-500 truncate">{expense.location}</span></>)}
+          {expense.comments && expense.comments.length > 0 && (<><span className="text-xs text-zinc-600">·</span><span className="text-xs text-zinc-500">💬 {expense.comments.length}</span></>)}
+        </div>
+      </div>
+      <div className="text-right flex-shrink-0">
+        <div className={`text-white font-bold ${isDeleted ? 'line-through' : ''}`}>{formatMoney(expense.amount, settings.fromCurrency)}</div>
+        <div className="text-[10px] text-zinc-500">{formatMoney(convert(expense.amount, currentRate), settings.toCurrency)}</div>
+      </div>
+    </button>
+  );
+}
+
+// ========== HomeTab ==========
+function HomeTab({ expenses, settings, members, currentRate, refreshRate, refreshing, online, setTab, me, logoutIdentity, isOwner }) {
+  const today = new Date().toISOString().split('T')[0];
+  const todayExpenses = expenses.filter(e => e.date === today);
+  const todayTotal = todayExpenses.reduce((s, e) => s + e.amount, 0);
+  const totalAll = expenses.reduce((s, e) => s + e.amount, 0);
+  const startDate = new Date(settings.startDate);
+  const dayNum = Math.max(1, Math.floor((new Date() - startDate) / (1000 * 60 * 60 * 24)) + 1);
+  const balances = calculateBalances(expenses, members);
+  const transfers = simplifyTransfers(balances);
+  const memberSpent = calculateMemberSpending(expenses, members);
+  const ranking = members
+    .map(m => ({ member: m, spent: memberSpent[m.id] || 0 }))
+    .sort((a, b) => b.spent - a.spent);
+  const showRanking = members.length >= 2 && ranking.some(r => r.spent > 0);
+  const rateTime = currentRate ? new Date(currentRate.timestamp).toLocaleString('zh-HK', { hour: '2-digit', minute: '2-digit' }) : '—';
+
+  return (
+    <div className="px-5 safe-top pt-4 pb-4 space-y-5">
+      <div className="flex items-center justify-between -mb-2">
+        {isOwner ? (
+          <button onClick={() => setRoute({ kind: 'list' })} className="text-zinc-500 text-xs flex items-center gap-1">
+            <IconChevron className="w-3 h-3 rotate-180" /> 旅程列表
+          </button>
+        ) : <div />}
+        {me && (
+          <button onClick={() => { if (confirm('切換身分？')) logoutIdentity && logoutIdentity(); }} className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-zinc-900">
+            <MemberAvatar member={me} size={18} />
+            <span className="text-[10px]" style={{ color: ensureReadableColor(me.color) }}>{me.name}</span>
+          </button>
+        )}
+      </div>
+
+      <div className="flex justify-between items-start">
+        <div>
+          <div className="text-xs text-zinc-500 uppercase tracking-widest mb-1">Trip · Day {dayNum} / {settings.totalDays}</div>
+          <h1 className="text-3xl font-bold text-white">{settings.tripName}</h1>
+        </div>
+        <div className={`flex items-center gap-1 px-2 py-1 rounded-full text-[10px] ${online ? 'bg-green-500/10 text-green-400' : 'bg-zinc-800 text-zinc-500'}`}>
+          {online ? <IconWifi className="w-3 h-3" /> : <IconWifiOff className="w-3 h-3" />}
+          <span>{online ? '已同步' : '離線'}</span>
+        </div>
+      </div>
+
+      <div className="bg-gradient-to-br from-orange-500 to-orange-700 rounded-3xl p-5 shadow-lg shadow-orange-500/20">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2 text-white/80 text-xs"><IconTrend className="w-4 h-4" /> 即時匯率</div>
+          <button onClick={refreshRate} disabled={refreshing} className="text-white/80"><IconRefresh className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} /></button>
+        </div>
+        <div className="text-white">
+          <div className="text-sm opacity-90">1 {settings.fromCurrency} =</div>
+          <div className="text-3xl font-bold">{currentRate ? currentRate.rate.toFixed(4) : '—'} <span className="text-lg opacity-80">{settings.toCurrency}</span></div>
+          <div className="text-xs opacity-70 mt-1">更新於 {rateTime}{currentRate?.source && <span className="opacity-60 ml-1">· {currentRate.source}</span>}</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4">
+          <div className="flex items-center gap-1.5 text-zinc-500 text-[10px] uppercase tracking-wider mb-2"><IconWallet className="w-3 h-3" />今日支出</div>
+          <div className="text-xl font-bold text-white">{formatMoney(todayTotal, settings.fromCurrency, true)}</div>
+          <div className="text-xs text-orange-400 mt-1">≈ {formatMoney(convert(todayTotal, currentRate), settings.toCurrency, true)}</div>
+        </div>
+        <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4">
+          <div className="flex items-center gap-1.5 text-zinc-500 text-[10px] uppercase tracking-wider mb-2"><IconDollar className="w-3 h-3" />旅程累計</div>
+          <div className="text-xl font-bold text-white">{formatMoney(totalAll, settings.fromCurrency, true)}</div>
+          <div className="text-xs text-orange-400 mt-1">≈ {formatMoney(convert(totalAll, currentRate), settings.toCurrency, true)}</div>
+        </div>
+      </div>
+
+      {members.length >= 2 && (
+        <div className="bg-zinc-950 border border-zinc-900 rounded-3xl p-5">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wider">結算</h2>
+            <span className="text-xs text-zinc-600">{transfers.length} 筆轉帳</span>
+          </div>
+          {transfers.length === 0 ? (
+            <div className="text-center py-4"><div className="text-2xl mb-1">✨</div><div className="text-zinc-500 text-sm">大家平晒數</div></div>
+          ) : (
+            <div className="space-y-2">
+              {transfers.map((t, idx) => {
+                const from = members.find(m => m.id === t.from);
+                const to = members.find(m => m.id === t.to);
+                return (
+                  <div key={idx} className="flex items-center gap-3 py-2">
+                    <MemberAvatar member={from} size={36} />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-white text-sm">
+                        <span className="font-medium" style={{ color: ensureReadableColor(from?.color) }}>{from?.name}</span>
+                        <span className="text-zinc-500 mx-1.5">→</span>
+                        <span className="font-medium" style={{ color: ensureReadableColor(to?.color) }}>{to?.name}</span>
+                      </div>
+                      <div className="text-xs text-orange-400">{formatMoney(t.amount, settings.fromCurrency)}<span className="text-zinc-600 ml-1">≈ {formatMoney(convert(t.amount, currentRate), settings.toCurrency)}</span></div>
+                    </div>
+                    <MemberAvatar member={to} size={36} />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {showRanking && (
+        <div className="bg-zinc-950 border border-zinc-900 rounded-3xl p-5">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wider">💰 發達排行榜</h2>
+            <span className="text-xs text-zinc-600">個人實際花費</span>
+          </div>
+          <div className="space-y-2">
+            {ranking.map((r, idx) => {
+              const isFirst = idx === 0 && r.spent > 0;
+              const isLast = idx === ranking.length - 1 && ranking.length >= 2 && r.spent > 0 && r.spent < ranking[0].spent;
+              const badge = isFirst ? { text: '發咗達', emoji: '🥇', cls: 'text-yellow-400' }
+                         : isLast  ? { text: '識計數', emoji: '🧮', cls: 'text-green-400' }
+                         : null;
+              const memColor = ensureReadableColor(r.member.color);
+              return (
+                <div key={r.member.id} className="flex items-center gap-3 py-1.5">
+                  <div className="w-6 text-center text-xs font-bold text-zinc-500">{idx + 1}</div>
+                  <MemberAvatar member={r.member} size={34} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm font-medium truncate" style={{ color: memColor }}>{r.member.name}</span>
+                      {badge && <span className={`text-[10px] font-bold ${badge.cls} flex-shrink-0`}>{badge.emoji} {badge.text}</span>}
+                    </div>
+                    <div className="text-[10px] text-zinc-500">≈ {formatMoney(convert(r.spent, currentRate), settings.toCurrency)}</div>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <div className="text-white font-bold text-sm">{formatMoney(r.spent, settings.fromCurrency)}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div>
+        <div className="flex justify-between items-baseline mb-3">
+          <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wider">今日花費</h2>
+          <button onClick={() => setTab('records')} className="text-xs text-orange-500 flex items-center gap-0.5">全部 <IconChevron className="w-3 h-3" /></button>
+        </div>
+        {todayExpenses.length === 0 ? (
+          <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-8 text-center"><div className="text-3xl mb-2">🌱</div><div className="text-zinc-500 text-sm">今日還沒有消費</div></div>
+        ) : (
+          <div className="space-y-2">
+            {todayExpenses.slice(0, 5).map(e => <ExpenseCard key={e.id} expense={e} members={members} settings={settings} currentRate={currentRate} />)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ========== RecordsTab ==========
+function RecordsTab({ expenses, allExpenses, upsertExpense, deleteExpense, restoreExpense, addComment, deleteComment, members, settings, currentRate, isEditor, isAdmin, me, showDeleted, setShowDeleted }) {
+  const [view, setView] = useState('date');
+  const [showAdd, setShowAdd] = useState(false);
+  const [editExpenseId, setEditExpenseId] = useState(null);
+  // 每次 render 都重新 look up，確保 editor 見到最新 comments
+  const editExpense = editExpenseId ? expenses.find(e => e.id === editExpenseId) || (allExpenses || []).find(e => e.id === editExpenseId) : null;
+  const aliveTotal = expenses.filter(e => !e.deleted).reduce((s, e) => s + e.amount, 0);
+  const deletedCount = (allExpenses || []).filter(e => e.deleted).length;
+
+  const grouped = {};
+  expenses.forEach(e => { if (!grouped[e.date]) grouped[e.date] = []; grouped[e.date].push(e); });
+  const sortedDates = Object.keys(grouped).sort().reverse();
+
+  const byCategory = {};
+  expenses.forEach(e => {
+    if (e.deleted) return;
+    if (!byCategory[e.category]) byCategory[e.category] = { items: [], total: 0 };
+    byCategory[e.category].items.push(e);
+    byCategory[e.category].total += e.amount;
+  });
+
+  const handleEditorDelete = (id) => {
+    if (confirm('刪除呢筆消費？\n（會放入「已刪除」，可以還原）')) deleteExpense(id);
+  };
+
+  return (
+    <div className="px-5 safe-top pt-4 pb-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-white">所有消費</h1>
+          <p className="text-xs text-zinc-500 mt-1">{expenses.filter(e => !e.deleted).length} 筆 · {formatMoney(aliveTotal, settings.fromCurrency)} · ≈ {formatMoney(convert(aliveTotal, currentRate), settings.toCurrency)}</p>
+        </div>
+        {isEditor && (
+          <button onClick={() => setShowAdd(true)} className="w-11 h-11 bg-gradient-to-br from-orange-400 to-orange-600 text-white rounded-full flex items-center justify-center shadow-lg shadow-orange-500/20"><IconPlus className="w-5 h-5" /></button>
+        )}
+      </div>
+
+      <div className="bg-zinc-950 border border-zinc-900 rounded-xl p-1 flex">
+        <button onClick={() => setView('date')} className={`flex-1 py-2 rounded-lg text-sm ${view === 'date' ? 'bg-orange-500 text-white font-medium' : 'text-zinc-500'}`}>按日期</button>
+        <button onClick={() => setView('category')} className={`flex-1 py-2 rounded-lg text-sm ${view === 'category' ? 'bg-orange-500 text-white font-medium' : 'text-zinc-500'}`}>按類別</button>
+      </div>
+
+      {deletedCount > 0 && (
+        <button onClick={() => setShowDeleted && setShowDeleted(!showDeleted)} className="w-full py-2 text-xs text-zinc-400 bg-zinc-950 border border-zinc-900 rounded-xl flex items-center justify-center gap-2">
+          <IconTrash className="w-3.5 h-3.5" />
+          {showDeleted ? '隱藏已刪除' : `顯示已刪除（${deletedCount} 筆）`}
+        </button>
+      )}
+
+      {expenses.length === 0 && (
+        <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-8 text-center">
+          <div className="text-4xl mb-2">📝</div>
+          <div className="text-zinc-500 text-sm mb-3">還沒有任何記錄</div>
+          {isEditor && <button onClick={() => setShowAdd(true)} className="text-orange-500 font-medium text-sm">+ 新增一筆</button>}
+        </div>
+      )}
+
+      {view === 'date' && sortedDates.map(date => {
+        const items = grouped[date];
+        const dayTotal = items.filter(e => !e.deleted).reduce((s, e) => s + e.amount, 0);
+        const dObj = new Date(date);
+        const dow = ['日','一','二','三','四','五','六'][dObj.getDay()];
+        return (
+          <div key={date} className="space-y-2">
+            <div className="flex justify-between items-baseline px-1">
+              <div className="text-sm font-medium text-zinc-300">{date}（{dow}）</div>
+              <div className="text-xs text-zinc-500">{formatMoney(dayTotal, settings.fromCurrency)}</div>
+            </div>
+            {items.map(e => (
+              <div key={e.id} className="space-y-1">
+                <ExpenseCard expense={e} members={members} settings={settings} currentRate={currentRate} onClick={() => isEditor && setEditExpenseId(e.id)} />
+                {e.deleted && isEditor && (
+                  <button onClick={() => restoreExpense(e.id)} className="w-full py-1.5 text-[11px] text-orange-400 bg-orange-500/10 rounded-lg flex items-center justify-center gap-1">
+                    <IconRefresh className="w-3 h-3" /> 還原
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        );
+      })}
+
+      {view === 'category' && Object.keys(byCategory).map(catId => {
+        const cat = CATEGORIES.find(c => c.id === catId);
+        const { items, total: catTotal } = byCategory[catId];
+        return (
+          <div key={catId} className="space-y-2">
+            <div className="flex justify-between items-baseline px-1">
+              <div className="text-sm font-medium flex items-center gap-2" style={{ color: cat?.color }}><span>{cat?.emoji}</span> {cat?.name}</div>
+              <div className="text-xs text-zinc-500">{formatMoney(catTotal, settings.fromCurrency)}</div>
+            </div>
+            {items.map(e => <ExpenseCard key={e.id} expense={e} members={members} settings={settings} currentRate={currentRate} onClick={() => isEditor && setEditExpenseId(e.id)} />)}
+          </div>
+        );
+      })}
+
+      {(showAdd || editExpense) && (
+        <ExpenseEditor
+          expense={editExpense}
+          members={members}
+          settings={settings}
+          me={me}
+          isAdmin={isAdmin}
+          addComment={addComment}
+          deleteComment={deleteComment}
+          onDelete={editExpense ? () => { handleEditorDelete(editExpense.id); setEditExpenseId(null); } : null}
+          onClose={() => { setShowAdd(false); setEditExpenseId(null); }}
+          onSave={(data) => {
+            if (editExpense) upsertExpense({ ...editExpense, ...data });
+            else upsertExpense(data);
+            setShowAdd(false); setEditExpenseId(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ========== ExpenseEditor ==========
+function DarkField({ label, children }) {
+  return <div className="space-y-2"><label className="block text-xs text-zinc-500 uppercase tracking-wider">{label}</label>{children}</div>;
+}
+
+function ExpenseEditor({ expense, members, settings, onClose, onSave, onDelete, addComment, deleteComment, me, isAdmin }) {
+  const [name, setName] = useState(expense?.name || '');
+  const [amount, setAmount] = useState(expense?.amount?.toString() || '');
+  const [category, setCategory] = useState(expense?.category || 'food');
+  const [paymentMethod, setPaymentMethod] = useState(expense?.paymentMethod || 'cash');
+  const [paidBy, setPaidBy] = useState(expense?.paidBy || members[0]?.id || '');
+  const [txType, setTxType] = useState(expense?.txType || 'shared');
+  const [splitMode, setSplitMode] = useState(expense?.splitMode || 'even');
+  const [splitAmong, setSplitAmong] = useState(expense?.splitAmong || members.map(m => m.id));
+  const [splitAmounts, setSplitAmounts] = useState(() => {
+    const init = {};
+    members.forEach(m => init[m.id] = '');
+    if (expense?.splitAmounts) Object.entries(expense.splitAmounts).forEach(([k, v]) => init[k] = String(v));
+    return init;
+  });
+  const [location, setLocation] = useState(expense?.location || '');
+  const [notes, setNotes] = useState(expense?.notes || '');
+  const [datetime, setDatetime] = useState(() => {
+    if (expense?.datetime) return expense.datetime;
+    const base = expense?.date || new Date().toISOString().split('T')[0];
+    const t = expense?.time || '12:00';
+    if (expense?.date) return `${base}T${t}`;
+    const now = new Date();
+    const pad = n => n.toString().padStart(2,'0');
+    return `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+  });
+  const [newComment, setNewComment] = useState('');
+
+  const comments = expense?.comments || [];
+
+  // 個人消費 → force 付款人自分自擔
+  useEffect(() => {
+    if (txType === 'personal' && paidBy) {
+      setSplitAmong([paidBy]);
+      setSplitMode('even');
+    }
+  }, [txType, paidBy]);
+
+  const toggleSplit = (id) => {
+    if (txType === 'personal') return;
+    setSplitAmong(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+  };
+
+  const amt = parseFloat(amount) || 0;
+  // 混合分帳：有輸入嘅人 = 自己嗰個數；未輸入 = 平均分剩返
+  const fixedIds = splitAmong.filter(id => {
+    const v = splitAmounts[id];
+    return v !== '' && v !== undefined && v !== null && !isNaN(parseFloat(v));
+  });
+  const freeIds = splitAmong.filter(id => !fixedIds.includes(id));
+  const fixedSum = fixedIds.reduce((s, id) => s + (parseFloat(splitAmounts[id]) || 0), 0);
+  const remainder = amt - fixedSum;
+  const freeShare = freeIds.length > 0 ? remainder / freeIds.length : 0;
+  const computedShare = (id) => fixedIds.includes(id) ? (parseFloat(splitAmounts[id]) || 0) : freeShare;
+  const manualOverBudget = fixedSum > amt + 0.01;
+  const manualAllFixed = freeIds.length === 0 && Math.abs(fixedSum - amt) > 0.01;
+
+  const handleSave = () => {
+    if (!name || !amount) { alert('請填寫名稱同金額'); return; }
+    if (members.length > 0 && splitAmong.length === 0) { alert('請揀至少一個分擔者'); return; }
+    if (txType === 'shared' && splitMode === 'manual') {
+      if (manualOverBudget) { alert(`固定金額加起來 ${formatMoney(fixedSum, settings.fromCurrency)} 已經超過總額 ${formatMoney(amt, settings.fromCurrency)}`); return; }
+      if (manualAllFixed) { alert(`大家全部都自己輸入咗金額，但加總同總額唔等（${formatMoney(fixedSum, settings.fromCurrency)} vs ${formatMoney(amt, settings.fromCurrency)}）`); return; }
+    }
+    const [d, t] = datetime.split('T');
+    // 計算最終每人分擔（shared + manual：fixed 原值，free 均分 remainder）
+    const finalAmounts = (txType === 'shared' && splitMode === 'manual')
+      ? Object.fromEntries(splitAmong.map(id => [id, computedShare(id)]))
+      : null;
+    onSave({
+      name, amount: amt, category, paymentMethod, paidBy,
+      txType,
+      splitMode: txType === 'personal' ? 'even' : splitMode,
+      splitAmong,
+      splitAmounts: finalAmounts,
+      location, notes,
+      date: d, time: t || '12:00', datetime,
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 z-50 flex items-end backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-zinc-900 w-full rounded-t-3xl p-5 max-h-[92vh] overflow-y-auto border-t border-zinc-800 safe-bottom" onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-5">
+          <h2 className="text-xl font-bold text-white">{expense ? '編輯消費' : '新增消費'}</h2>
+          <button onClick={onClose} className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center"><IconX className="w-4 h-4 text-zinc-400" /></button>
+        </div>
+        <div className="space-y-4">
+          <DarkField label="名稱"><input value={name} onChange={e => setName(e.target.value)} placeholder="例如：咖啡、麵包" className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl outline-none focus:ring-2 ring-orange-500 placeholder-zinc-500" /></DarkField>
+          <DarkField label={`金額（${settings.fromCurrency}）`}>
+            <div className="relative">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500 text-xl">{getCurrencySymbol(settings.fromCurrency)}</span>
+              <input type="number" inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0" className="w-full pl-12 pr-4 py-3 bg-zinc-800 text-white rounded-xl outline-none focus:ring-2 ring-orange-500 text-2xl font-bold placeholder-zinc-600" />
+            </div>
+          </DarkField>
+
+          <DarkField label="交易類型">
+            <div className="bg-zinc-800 rounded-xl p-1 flex">
+              <button onClick={() => setTxType('shared')} className={`flex-1 py-2 rounded-lg text-sm ${txType === 'shared' ? 'bg-orange-500 text-white font-medium' : 'text-zinc-400'}`}>👥 共同分帳</button>
+              <button onClick={() => setTxType('personal')} className={`flex-1 py-2 rounded-lg text-sm ${txType === 'personal' ? 'bg-orange-500 text-white font-medium' : 'text-zinc-400'}`}>👤 個人消費</button>
+            </div>
+            {txType === 'personal' && <p className="text-[10px] text-zinc-500 mt-1">個人消費完全唔入結算，只係紀錄</p>}
+          </DarkField>
+
+          <DarkField label="類別">
+            <div className="grid grid-cols-4 gap-2">
+              {CATEGORIES.map(c => (
+                <button key={c.id} onClick={() => setCategory(c.id)} className={`py-3 rounded-xl flex flex-col items-center gap-0.5 ${category === c.id ? 'text-white' : 'bg-zinc-800 text-zinc-400'}`} style={category === c.id ? { backgroundColor: c.color } : {}}>
+                  <span className="text-lg">{c.emoji}</span><span className="text-[10px]">{c.name}</span>
+                </button>
+              ))}
+            </div>
+          </DarkField>
+          <DarkField label="支付方式">
+            <div className="grid grid-cols-4 gap-2">
+              {PAYMENT_METHODS.map(p => (
+                <button key={p.id} onClick={() => setPaymentMethod(p.id)} className={`py-2.5 rounded-xl text-sm ${paymentMethod === p.id ? 'bg-orange-500 text-white font-medium' : 'bg-zinc-800 text-zinc-400'}`}>{p.name}</button>
+              ))}
+            </div>
+          </DarkField>
+
+          {members.length > 0 && (
+            <>
+              <DarkField label={txType === 'personal' ? '誰消費' : '誰付款'}>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {members.map(m => {
+                    const selected = paidBy === m.id;
+                    return (
+                      <button key={m.id} onClick={() => setPaidBy(m.id)} className={`flex-shrink-0 flex flex-col items-center gap-1 p-2 rounded-xl min-w-[60px] ${selected ? 'ring-2' : 'bg-zinc-800'}`} style={selected ? { backgroundColor: (m.color || '#FF8C00') + '33', '--tw-ring-color': m.color || '#FF8C00' } : {}}>
+                        <MemberAvatar member={m} size={36} />
+                        <span className="text-[10px] truncate max-w-[56px]" style={{ color: selected ? ensureReadableColor(m.color) : '#fff' }}>{m.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </DarkField>
+
+              {txType === 'shared' && (
+                <>
+                  <DarkField label="分帳方式">
+                    <div className="bg-zinc-800 rounded-xl p-1 flex">
+                      <button onClick={() => setSplitMode('even')} className={`flex-1 py-2 rounded-lg text-sm ${splitMode === 'even' ? 'bg-orange-500 text-white font-medium' : 'text-zinc-400'}`}>平均分</button>
+                      <button onClick={() => setSplitMode('manual')} className={`flex-1 py-2 rounded-lg text-sm ${splitMode === 'manual' ? 'bg-orange-500 text-white font-medium' : 'text-zinc-400'}`}>手動輸入</button>
+                    </div>
+                  </DarkField>
+
+                  <DarkField label={`由誰分擔（${splitAmong.length} 人）`}>
+                    <div className="grid grid-cols-3 gap-2">
+                      <button onClick={() => setSplitAmong(members.map(m => m.id))} className="py-2 text-xs bg-zinc-800 text-zinc-300 rounded-lg">全部</button>
+                      <button onClick={() => setSplitAmong([paidBy])} className="py-2 text-xs bg-zinc-800 text-zinc-300 rounded-lg">只付款人</button>
+                      <button onClick={() => setSplitAmong(members.filter(m => m.id !== paidBy).map(m => m.id))} className="py-2 text-xs bg-zinc-800 text-zinc-300 rounded-lg">其他人</button>
+                    </div>
+                    <div className="space-y-2 mt-2">
+                      {members.map(m => {
+                        const active = splitAmong.includes(m.id);
+                        const evenShare = active && amt > 0 ? amt / splitAmong.length : 0;
+                        const isFixed = active && fixedIds.includes(m.id);
+                        const showShare = active && amt > 0;
+                        return (
+                          <div key={m.id} className={`rounded-xl ${active ? 'bg-orange-500/10 border border-orange-500/50' : 'bg-zinc-800 border border-transparent'}`}>
+                            <button onClick={() => toggleSplit(m.id)} className="w-full flex items-center gap-3 p-2.5 text-left">
+                              <MemberAvatar member={m} size={32} />
+                              <span className="flex-1 text-sm" style={{ color: ensureReadableColor(m.color) }}>{m.name}</span>
+                              {showShare && splitMode === 'even' && <span className="text-xs text-orange-400">{formatMoney(evenShare, settings.fromCurrency)}</span>}
+                              {showShare && splitMode === 'manual' && (
+                                <span className={`text-xs ${isFixed ? 'text-orange-400 font-medium' : 'text-zinc-500'}`}>
+                                  {formatMoney(computedShare(m.id), settings.fromCurrency)}
+                                  {!isFixed && <span className="ml-1 text-[9px]">平均</span>}
+                                </span>
+                              )}
+                              <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${active ? 'bg-orange-500 border-orange-500' : 'border-zinc-600'}`}>{active && <IconCheck className="w-3 h-3 text-white" />}</div>
+                            </button>
+                            {active && splitMode === 'manual' && (
+                              <div className="px-2.5 pb-2.5">
+                                <div className="relative">
+                                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 text-sm">{getCurrencySymbol(settings.fromCurrency)}</span>
+                                  <input type="number" inputMode="decimal" value={splitAmounts[m.id] || ''}
+                                    onChange={e => setSplitAmounts(s => ({ ...s, [m.id]: e.target.value }))}
+                                    placeholder={freeIds.includes(m.id) ? `空白 = 平均分 ${formatMoney(freeShare, settings.fromCurrency)}` : '0'}
+                                    className="w-full pl-9 pr-3 py-2 bg-zinc-900 text-white rounded-lg outline-none focus:ring-1 ring-orange-500 text-sm placeholder-zinc-600" />
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {splitMode === 'manual' && amt > 0 && (
+                      <div className={`mt-2 p-2 rounded-lg text-xs space-y-0.5 ${manualOverBudget || manualAllFixed ? 'bg-red-500/10 text-red-400' : 'bg-green-500/10 text-green-400'}`}>
+                        <div className="flex justify-between">
+                          <span>固定 {fixedIds.length} 人</span>
+                          <span>{formatMoney(fixedSum, settings.fromCurrency)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>平均分 {freeIds.length} 人</span>
+                          <span>{freeIds.length > 0 ? `每人 ${formatMoney(freeShare, settings.fromCurrency)}` : '—'}</span>
+                        </div>
+                        {manualOverBudget && <div className="pt-1">⚠️ 固定金額超過總額</div>}
+                        {manualAllFixed && <div className="pt-1">⚠️ 全部人固定但加總 ≠ 總額</div>}
+                        {!manualOverBudget && !manualAllFixed && <div className="pt-1">✓ 總計 {formatMoney(amt, settings.fromCurrency)}</div>}
+                      </div>
+                    )}
+                  </DarkField>
+                </>
+              )}
+            </>
+          )}
+
+          <DarkField label="地點（選填）"><input value={location} onChange={e => setLocation(e.target.value)} placeholder="例如：Lawson" className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl outline-none focus:ring-2 ring-orange-500 placeholder-zinc-500" /></DarkField>
+          <DarkField label="備註（選填）">
+            <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="任何備註…" rows={2} className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl outline-none focus:ring-2 ring-orange-500 placeholder-zinc-500 resize-none" />
+          </DarkField>
+          <DarkField label="日期時間"><input type="datetime-local" value={datetime} onChange={e => setDatetime(e.target.value)} className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl outline-none focus:ring-2 ring-orange-500" style={{ colorScheme: 'dark' }} /></DarkField>
+
+          {expense && addComment && (
+            <DarkField label={`留言（${comments.length}）`}>
+              {comments.length === 0 ? (
+                <div className="text-xs text-zinc-500 py-2 text-center bg-zinc-800/50 rounded-lg">仲未有留言</div>
+              ) : (
+                <div className="space-y-2 mb-2">
+                  {comments.map(c => {
+                    const author = members.find(m => m.id === c.authorId);
+                    const canDelete = c.authorId === me?.id || isAdmin;
+                    const d = new Date(c.createdAt || 0);
+                    const ts = `${d.getMonth()+1}/${d.getDate()} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+                    return (
+                      <div key={c.id} className="bg-zinc-800 rounded-xl p-2.5">
+                        <div className="flex items-start gap-2">
+                          <MemberAvatar member={author} size={24} />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-xs font-medium" style={{ color: ensureReadableColor(author?.color) }}>{author?.name || '(已離開)'}</span>
+                              <span className="text-[10px] text-zinc-500">{ts}</span>
+                            </div>
+                            <div className="text-sm text-white mt-0.5 whitespace-pre-wrap break-words">{c.text}</div>
+                          </div>
+                          {canDelete && (
+                            <button onClick={() => { if (confirm('刪除呢個留言？')) deleteComment(expense.id, c.id); }} className="text-zinc-500 p-1">
+                              <IconX className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="flex gap-2">
+                <input value={newComment} onChange={e => setNewComment(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (newComment.trim()) { addComment(expense.id, newComment); setNewComment(''); } } }} placeholder="加個留言…" className="flex-1 px-3 py-2 bg-zinc-800 text-white rounded-lg outline-none focus:ring-2 ring-orange-500 placeholder-zinc-500 text-sm" />
+                <button onClick={() => { if (newComment.trim()) { addComment(expense.id, newComment); setNewComment(''); } }} disabled={!newComment.trim()} className="px-4 py-2 bg-orange-500 text-white rounded-lg text-sm font-medium disabled:opacity-40">發送</button>
+              </div>
+            </DarkField>
+          )}
+
+          <div className="flex gap-2 pt-2">
+            {onDelete && <button onClick={onDelete} className="px-5 py-4 bg-red-500/10 text-red-400 rounded-2xl"><IconTrash className="w-5 h-5" /></button>}
+            <button onClick={handleSave} className="flex-1 py-4 bg-gradient-to-br from-orange-400 to-orange-600 text-white font-bold rounded-2xl shadow-lg shadow-orange-500/20">{expense ? '儲存修改' : '新增'}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ========== ScanTab ==========
+function ScanTab({ addMultipleExpenses, members, settings, onDone, isEditor }) {
+  const [image, setImage] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('gemini_api_key') || '');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const fileRef = useRef(null);
+
+  if (!isEditor) {
+    return (
+      <div className="px-5 safe-top pt-4 pb-4">
+        <h1 className="text-3xl font-bold text-white mb-3">掃描收據</h1>
+        <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-8 text-center">
+          <div className="text-4xl mb-2">🔒</div>
+          <div className="text-zinc-500 text-sm">你係 Viewer，唔可以新增消費</div>
+        </div>
+      </div>
+    );
+  }
+
+  const handleFile = (file) => {
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = () => { setImage(r.result); setResult(null); setError(''); };
+    r.readAsDataURL(file);
+  };
+
+  const analyzeReceipt = async () => {
+    if (!image) return;
+    if (!apiKey) { setShowApiKey(true); return; }
+    setLoading(true); setError('');
+    try {
+      const base64 = image.split(',')[1];
+      const mediaType = image.match(/data:(.*?);/)[1];
+      const prompt = "你係收據辨識助手。分析呢張收據，只輸出 JSON（唔好有 markdown 代碼標記）：\n\n{\n  \"store\": \"商店名稱（繁體中文，日文店名可以保留）\",\n  \"date\": \"YYYY-MM-DD（睇唔到就用今日）\",\n  \"items\": [\n    { \"name\": \"商品名（繁中）\", \"price\": 單價數字, \"qty\": 數量, \"category\": \"food|transport|shopping|accommodation|ticket|medicine|other\" }\n  ]\n}\n\n重要：\n- 如果一樣嘢買咗多件，qty 就係件數，price 係單價\n- 只提取明細嘅商品，唔好包含「小計」「合計」「稅」\n- 類別：food=餐飲, transport=交通, shopping=購物, accommodation=酒店, ticket=門票, medicine=藥品, other=其他";
+
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { inline_data: { mime_type: mediaType, data: base64 } },
+              { text: prompt }
+            ]
+          }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 2000 }
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error?.message || '辨識失敗');
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const clean = text.replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(clean);
+      const expanded = [];
+      parsed.items.forEach(it => {
+        const qty = it.qty || 1;
+        for (let i = 0; i < qty; i++) {
+          expanded.push({
+            ...it, qty: 1, _id: Math.random().toString(36).slice(2),
+            paidBy: members[0]?.id || '',
+            splitAmong: members.map(m => m.id),
+            _originalQty: qty, _itemIdx: i + 1,
+          });
+        }
+      });
+      setResult({ store: parsed.store, date: parsed.date, items: expanded });
+    } catch (e) {
+      setError('辨識失敗：' + e.message);
+    }
+    setLoading(false);
+  };
+
+  const updateItem = (id, patch) => setResult(r => ({ ...r, items: r.items.map(it => it._id === id ? { ...it, ...patch } : it) }));
+  const deleteItem = (id) => setResult(r => ({ ...r, items: r.items.filter(it => it._id !== id) }));
+
+  const confirmSave = () => {
+    if (!result || !result.items.length) return;
+    const newExpenses = result.items.map((item) => ({
+      name: item.name, amount: item.price, category: item.category || 'other',
+      paymentMethod: 'cash', paidBy: item.paidBy, splitAmong: item.splitAmong,
+      location: result.store, date: result.date || new Date().toISOString().split('T')[0],
+    }));
+    addMultipleExpenses(newExpenses);
+    setImage(null); setResult(null); onDone();
+  };
+
+  const totalResult = result?.items.reduce((s, i) => s + i.price, 0) || 0;
+
+  return (
+    <div className="px-5 safe-top pt-4 pb-4 space-y-4">
+      <div>
+        <h1 className="text-3xl font-bold text-white">掃描收據</h1>
+        <p className="text-xs text-zinc-500 mt-1">AI 拆分每件商品，分別指派俾唔同嘅人</p>
+      </div>
+
+      {showApiKey && (
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-5" onClick={() => setShowApiKey(false)}>
+          <div className="bg-zinc-900 rounded-2xl p-5 w-full max-w-sm" onClick={e => e.stopPropagation()}>
+            <h3 className="text-white font-bold mb-2">設定 Gemini API Key</h3>
+            <p className="text-xs text-zinc-500 mb-3">OCR 需要 Google Gemini 嘅免費 API key。去 <span className="text-orange-400">aistudio.google.com/apikey</span> 取得（免費）。Key 只會存喺你手機，唔會上傳任何地方。</p>
+            <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="AIza..." className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl outline-none text-sm" />
+            <button onClick={() => { localStorage.setItem('gemini_api_key', apiKey); setShowApiKey(false); }} className="w-full mt-3 py-3 bg-orange-500 text-white rounded-xl font-medium">儲存</button>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4">
+        {!image ? (
+          <>
+            <button onClick={() => fileRef.current?.click()} className="w-full py-12 border-2 border-dashed border-zinc-800 rounded-2xl flex flex-col items-center gap-2 text-zinc-500">
+              <IconUpload className="w-8 h-8" /><span className="text-sm">點擊拍照或上傳</span>
+            </button>
+            <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={e => handleFile(e.target.files?.[0])} className="hidden" />
+            {!apiKey && <button onClick={() => setShowApiKey(true)} className="w-full mt-2 text-xs text-orange-500 py-2">⚠️ 未設定 API key，點擊設定</button>}
+          </>
+        ) : (
+          <div className="space-y-3">
+            <img src={image} alt="receipt" className="w-full rounded-xl max-h-72 object-contain bg-black" />
+            {!loading && !result && (
+              <div className="flex gap-2">
+                <button onClick={() => { setImage(null); setResult(null); }} className="flex-1 py-3 bg-zinc-800 text-zinc-300 rounded-xl font-medium">重新選</button>
+                <button onClick={analyzeReceipt} className="flex-1 py-3 bg-gradient-to-br from-orange-400 to-orange-600 text-white rounded-xl font-medium">AI 辨識</button>
+              </div>
+            )}
+            {loading && <div className="py-4 flex items-center justify-center gap-2 text-orange-500"><IconLoader className="w-5 h-5 animate-spin" /><span>正在辨識...</span></div>}
+            {error && <div className="p-3 bg-red-500/10 text-red-400 text-sm rounded-xl">{error}</div>}
+          </div>
+        )}
+      </div>
+
+      {result && (
+        <>
+          <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4">
+            <div className="flex justify-between items-center mb-3">
+              <div><div className="text-white font-bold">{result.store}</div><div className="text-xs text-zinc-500">{result.date}</div></div>
+              <div className="text-right"><div className="text-xs text-zinc-500">總計</div><div className="text-white font-bold text-xl">{formatMoney(totalResult, settings.fromCurrency)}</div></div>
+            </div>
+            <div className="text-xs text-orange-400 bg-orange-500/10 border border-orange-500/30 rounded-xl p-3">💡 每件商品都可以分別指派「誰付款」同「誰分擔」。</div>
+          </div>
+          <div className="space-y-2">
+            {result.items.map((item) => <ScanItemCard key={item._id} item={item} members={members} settings={settings} onUpdate={(patch) => updateItem(item._id, patch)} onDelete={() => deleteItem(item._id)} />)}
+          </div>
+          <button onClick={confirmSave} className="w-full py-4 bg-gradient-to-br from-orange-400 to-orange-600 text-white font-bold rounded-2xl shadow-lg shadow-orange-500/20">確認儲存（{result.items.length} 筆）</button>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ScanItemCard({ item, members, settings, onUpdate, onDelete }) {
+  const [expanded, setExpanded] = useState(false);
+  const cat = CATEGORIES.find(c => c.id === item.category);
+  const paidBy = members.find(m => m.id === item.paidBy);
+  const splitCount = item.splitAmong?.length || 0;
+  const isShared = splitCount === members.length;
+  const isPersonal = splitCount === 1;
+
+  return (
+    <div className="bg-zinc-950 border border-zinc-900 rounded-2xl overflow-hidden">
+      <button onClick={() => setExpanded(!expanded)} className="w-full p-3 flex items-center gap-3 text-left">
+        <div className="w-9 h-9 rounded-lg flex items-center justify-center text-base flex-shrink-0" style={{ backgroundColor: cat?.color + '20' }}>{cat?.emoji}</div>
+        <div className="flex-1 min-w-0">
+          <div className="text-white text-sm truncate">{item.name}{item._originalQty > 1 && <span className="text-zinc-500 text-xs ml-1">({item._itemIdx}/{item._originalQty})</span>}</div>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            {paidBy ? <><MemberAvatar member={paidBy} size={14} /><span className="text-[10px] text-zinc-500">{paidBy.name}</span></> : <span className="text-[10px] text-zinc-600">未指派</span>}
+            <span className="text-[10px] text-zinc-600">·</span>
+            <span className="text-[10px] text-zinc-500">{isShared ? '共同分擔' : isPersonal ? '個人' : `${splitCount} 人分擔`}</span>
+          </div>
+        </div>
+        <div className="text-white font-bold">{formatMoney(item.price, settings.fromCurrency)}</div>
+      </button>
+      {expanded && (
+        <div className="px-3 pb-3 space-y-3 border-t border-zinc-900 pt-3">
+          <div>
+            <div className="text-[10px] text-zinc-500 uppercase tracking-wider mb-1.5">誰付款</div>
+            <div className="flex gap-1.5 overflow-x-auto pb-1">
+              {members.map(m => (
+                <button key={m.id} onClick={() => onUpdate({ paidBy: m.id })} className={`flex-shrink-0 flex flex-col items-center gap-1 p-1.5 rounded-lg min-w-[50px] ${item.paidBy === m.id ? 'bg-orange-500/20 ring-1 ring-orange-500' : 'bg-zinc-900'}`}>
+                  <MemberAvatar member={m} size={28} /><span className="text-[9px] text-white truncate max-w-[46px]">{m.name}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="flex justify-between items-center mb-1.5">
+              <span className="text-[10px] text-zinc-500 uppercase tracking-wider">誰分擔</span>
+              <div className="flex gap-1">
+                <button onClick={() => onUpdate({ splitAmong: members.map(m => m.id) })} className="text-[10px] text-orange-400 px-2 py-0.5 rounded bg-orange-500/10">全部</button>
+                <button onClick={() => onUpdate({ splitAmong: item.paidBy ? [item.paidBy] : [] })} className="text-[10px] text-orange-400 px-2 py-0.5 rounded bg-orange-500/10">只付款人</button>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {members.map(m => {
+                const active = item.splitAmong?.includes(m.id);
+                return (
+                  <button key={m.id} onClick={() => {
+                    const next = active ? item.splitAmong.filter(x => x !== m.id) : [...(item.splitAmong || []), m.id];
+                    onUpdate({ splitAmong: next });
+                  }} className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs ${active ? 'bg-orange-500/20 text-orange-300 ring-1 ring-orange-500/50' : 'bg-zinc-900 text-zinc-500'}`}>
+                    <MemberAvatar member={m} size={18} /><span>{m.name}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <button onClick={onDelete} className="w-full py-2 text-xs text-red-400 bg-red-500/10 rounded-lg">移除此項</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ========== StatsTab ==========
+function StatsTab({ expenses, settings, members, currentRate }) {
+  const live = expenses.filter(e => !e.deleted);
+  const liveShared = live.filter(e => e.txType !== 'personal');
+  const totalAll = live.reduce((s, e) => s + e.amount, 0);
+  const totalShared = liveShared.reduce((s, e) => s + e.amount, 0);
+  const byCategory = {};
+  live.forEach(e => { byCategory[e.category] = (byCategory[e.category] || 0) + e.amount; });
+  const balances = calculateBalances(live, members);
+  const memberSpent = calculateMemberSpending(live, members);
+  const top10 = [...live].sort((a, b) => b.amount - a.amount).slice(0, 10);
+
+  return (
+    <div className="px-5 safe-top pt-4 pb-4 space-y-4">
+      <h1 className="text-3xl font-bold text-white">統計</h1>
+      <div className="bg-gradient-to-br from-orange-500 to-orange-700 rounded-3xl p-5 shadow-lg shadow-orange-500/20">
+        <div className="text-white/80 text-xs uppercase tracking-wider">旅程總支出</div>
+        <div className="text-white text-4xl font-bold mt-1">{formatMoney(totalAll, settings.fromCurrency)}</div>
+        <div className="text-white/80 text-sm mt-1">≈ {formatMoney(convert(totalAll, currentRate), settings.toCurrency)}</div>
+        {totalAll !== totalShared && (
+          <div className="text-white/70 text-[10px] mt-2 pt-2 border-t border-white/10">
+            共同分帳：{formatMoney(totalShared, settings.fromCurrency)} · 個人消費：{formatMoney(totalAll - totalShared, settings.fromCurrency)}
+          </div>
+        )}
+      </div>
+      <div className="bg-zinc-950 border border-zinc-900 rounded-3xl p-5">
+        <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wider mb-4">分類支出</h2>
+        <DonutChart data={CATEGORIES.map(c => ({ label: c.name, value: byCategory[c.id] || 0, color: c.color, emoji: c.emoji })).filter(d => d.value > 0)} total={totalAll} settings={settings} />
+      </div>
+      {members.length > 0 && (
+        <div className="bg-zinc-950 border border-zinc-900 rounded-3xl p-5">
+          <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wider mb-4">每人實際花費</h2>
+          <div className="space-y-3">
+            {members.map(m => {
+              const spent = memberSpent[m.id] || 0;
+              const bal = balances[m.id] || 0;
+              const pct = totalAll > 0 ? (spent / totalAll) * 100 : 0;
+              const memColor = ensureReadableColor(m.color);
+              return (
+                <div key={m.id} className="flex items-center gap-3">
+                  <MemberAvatar member={m} size={40} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex justify-between items-baseline mb-1">
+                      <span className="font-medium text-sm" style={{ color: memColor }}>{m.name}</span>
+                      <span className="text-white text-sm font-bold">{formatMoney(spent, settings.fromCurrency)}</span>
+                    </div>
+                    <div className="h-2 bg-zinc-900 rounded-full overflow-hidden mb-1"><div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: m.color || '#FF8C00' }} /></div>
+                    <div className="flex justify-between text-[10px]">
+                      <span className="text-zinc-500">{pct.toFixed(0)}%</span>
+                      <span className={bal > 0.01 ? 'text-green-400' : bal < -0.01 ? 'text-red-400' : 'text-zinc-500'}>
+                        {bal > 0.01 ? `應收 ${formatMoney(bal, settings.fromCurrency)}` : bal < -0.01 ? `應付 ${formatMoney(-bal, settings.fromCurrency)}` : '平衡'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      <div className="bg-zinc-950 border border-zinc-900 rounded-3xl p-5">
+        <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wider mb-3">花費前十名</h2>
+        {top10.length === 0 ? <div className="text-zinc-500 text-sm text-center py-4">暫無數據</div> : (
+          <div className="space-y-2">
+            {top10.map((e, idx) => {
+              const cat = CATEGORIES.find(c => c.id === e.category);
+              return (
+                <div key={e.id} className="flex items-center gap-3 py-1.5">
+                  <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs flex-shrink-0 ${idx < 3 ? 'bg-orange-500 text-white font-bold' : 'bg-zinc-900 text-zinc-500'}`}>{idx + 1}</div>
+                  <span className="text-sm">{cat?.emoji}</span>
+                  <div className="flex-1 min-w-0 truncate text-white text-sm">{e.name}</div>
+                  <div className="text-right flex-shrink-0"><div className="text-white font-bold text-sm">{formatMoney(e.amount, settings.fromCurrency)}</div></div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DonutChart({ data, total, settings }) {
+  if (data.length === 0 || total === 0) return <div className="text-center py-6 text-zinc-500 text-sm">暫無數據</div>;
+  const size = 160, sw = 24, r = (size - sw) / 2, c = 2 * Math.PI * r, cx = size / 2;
+  let acc = 0;
+  const segs = data.map(d => {
+    const pct = d.value / total, len = c * pct, off = c * (acc / total); acc += d.value;
+    return { ...d, len, off, pct };
+  });
+  return (
+    <div className="flex items-center gap-4">
+      <div className="relative flex-shrink-0">
+        <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+          {segs.map((s, i) => (<circle key={i} cx={cx} cy={cx} r={r} fill="none" stroke={s.color} strokeWidth={sw} strokeDasharray={`${s.len} ${c}`} strokeDashoffset={-s.off} transform={`rotate(-90 ${cx} ${cx})`} />))}
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <div className="text-[10px] text-zinc-500">TOTAL</div>
+          <div className="text-white text-sm font-bold">{formatMoney(total, settings.fromCurrency, true)}</div>
+        </div>
+      </div>
+      <div className="flex-1 space-y-1">
+        {segs.map((s, i) => (
+          <div key={i} className="flex items-center gap-2 text-xs">
+            <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: s.color }} />
+            <span className="text-zinc-300 flex-1">{s.label}</span>
+            <span className="text-zinc-500 text-[10px]">{(s.pct * 100).toFixed(0)}%</span>
+            <span className="text-white font-medium w-14 text-right">{formatMoney(s.value, settings.fromCurrency, true)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ========== SettingsTab ==========
+function OwnerSecretCard() {
+  const [show, setShow] = useState(false);
+  const [secret] = useState(() => getLocalOwnerSecret());
+  if (!secret) return null;
+  const copy = async () => { try { await navigator.clipboard.writeText(secret); alert('已複製'); } catch (e) {} };
+  return (
+    <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4 space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="text-sm text-white flex items-center gap-2">🔑 我嘅 Owner Secret</span>
+        <button onClick={() => setShow(s => !s)} className="text-xs text-orange-400">{show ? '隱藏' : '顯示'}</button>
+      </div>
+      {show && (
+        <>
+          <div className="bg-zinc-800 rounded-xl p-3 font-mono text-orange-400 text-center text-sm tracking-wider break-all">{secret}</div>
+          <button onClick={copy} className="w-full py-2 bg-zinc-800 text-white rounded-lg text-xs">📋 複製</button>
+          <div className="text-[10px] text-zinc-500">第二部裝置（iPhone）開呢個網站 → 撳「我係 Owner，登入」→ 貼呢個 secret</div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function SettingsTab({ tripId, tripMeta, settings, saveSettings, saveTripMeta, members, upsertMember, deleteMember, currentRate, refreshRate, refreshing, me, isAdmin, isEditor, logoutIdentity, openActivity, openInvite, isOwner, ownerCtx }) {
+  const [editingMember, setEditingMember] = useState(null);
+  const [showAddMember, setShowAddMember] = useState(false);
+  const [showCurrencyPicker, setShowCurrencyPicker] = useState(null);
+  const [shareToast, setShareToast] = useState('');
+
+  const handleDeleteMember = (id) => { if (confirm('確定刪除呢位旅伴？')) deleteMember(id); };
+  const fromCur = CURRENCIES.find(c => c.code === settings.fromCurrency);
+  const toCur = CURRENCIES.find(c => c.code === settings.toCurrency);
+
+  // tripMeta 已 merge 入 effectiveSettings；但寫返要寫去 trip doc（admin only）
+  const writeTripMetaField = (field, value) => {
+    if (!isAdmin) { alert('只有 Admin 可改旅程資訊'); return; }
+    saveTripMeta({ [field]: value });
+  };
+
+  const handleShare = async () => {
+    const r = await shareTrip(tripId, settings.tripName);
+    if (r.method === 'share') setShareToast('已分享 ✓');
+    else if (r.method === 'clipboard') setShareToast('連結已複製 ✓');
+    else if (r.method === 'fail') setShareToast('複製失敗：' + (r.url || ''));
+    if (r.method !== 'cancelled') setTimeout(() => setShareToast(''), 2400);
+  };
+
+  const setRole = (memberId, newRole) => {
+    if (!isAdmin) return;
+    const target = members.find(m => m.id === memberId);
+    if (!target) return;
+    if (target.role === 'admin' && newRole !== 'admin' && members.filter(m => m.role === 'admin').length <= 1) {
+      alert('必須至少保留一個 Admin');
+      return;
+    }
+    upsertMember({ ...target, role: newRole });
+  };
+
+  const fieldDisabled = !isAdmin;
+
+  return (
+    <div className="px-5 safe-top pt-4 pb-4 space-y-4">
+      {isOwner && (
+        <div className="flex items-center justify-between">
+          <button onClick={() => setRoute({ kind: 'list' })} className="text-zinc-500 text-xs flex items-center gap-1">
+            <IconChevron className="w-3 h-3 rotate-180" /> 旅程列表
+          </button>
+        </div>
+      )}
+      <h1 className="text-3xl font-bold text-white">設定</h1>
+
+      {/* 我嘅身分 */}
+      {me && (
+        <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4 space-y-3">
+          <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wider">我</h2>
+          <div className="flex items-center gap-3">
+            <MemberAvatar member={me} size={48} />
+            <div className="flex-1 min-w-0">
+              <div className="font-bold" style={{ color: ensureReadableColor(me.color) }}>{me.name}</div>
+              <div className="text-[10px] text-zinc-500">{ROLES[me.role || 'editor']?.name} · {ROLES[me.role || 'editor']?.desc}</div>
+            </div>
+            <button onClick={() => setEditingMember(me)} className="text-zinc-400 p-2 bg-zinc-900 rounded-lg"><IconPencil className="w-4 h-4" /></button>
+          </div>
+          <button onClick={() => { if (confirm('登出後下次入嚟要重新揀身分')) logoutIdentity && logoutIdentity(); }} className="w-full py-2 text-xs text-zinc-400 bg-zinc-900 rounded-lg">切換 / 登出身分</button>
+        </div>
+      )}
+
+      {/* 分享 */}
+      <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4 space-y-3">
+        <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wider">分享旅程</h2>
+        <button onClick={handleShare} className="w-full py-3 bg-gradient-to-br from-orange-400 to-orange-600 text-white rounded-xl font-medium flex items-center justify-center gap-2">
+          🔗 複製分享連結
+        </button>
+        <div className="text-[11px] text-zinc-500 break-all bg-zinc-900 rounded-lg p-2">{tripShareUrl(tripId)}</div>
+      </div>
+
+      {/* 旅程資訊：vertical stack */}
+      <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4 space-y-4">
+        <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wider">旅程資訊 {!isAdmin && <span className="text-zinc-600 normal-case">（Admin Only）</span>}</h2>
+        <DarkField label="旅程名稱">
+          <input value={settings.tripName} disabled={fieldDisabled} onChange={e => writeTripMetaField('name', e.target.value)} className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl outline-none focus:ring-2 ring-orange-500 disabled:opacity-50" />
+        </DarkField>
+        <DarkField label="開始日期">
+          <input type="date" value={settings.startDate} disabled={fieldDisabled} onChange={e => writeTripMetaField('startDate', e.target.value)} className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl outline-none focus:ring-2 ring-orange-500 disabled:opacity-50" style={{ colorScheme: 'dark' }} />
+        </DarkField>
+        <DarkField label="總天數">
+          <input type="number" value={settings.totalDays} disabled={fieldDisabled} onChange={e => writeTripMetaField('totalDays', parseInt(e.target.value) || 1)} className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl outline-none focus:ring-2 ring-orange-500 disabled:opacity-50" />
+        </DarkField>
+      </div>
+
+      {/* 貨幣設定 */}
+      <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4 space-y-4">
+        <div className="flex justify-between items-center">
+          <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wider">貨幣設定</h2>
+          <button onClick={refreshRate} disabled={refreshing} className="text-orange-500 text-xs flex items-center gap-1"><IconRefresh className={`w-3 h-3 ${refreshing ? 'animate-spin' : ''}`} /> 更新匯率</button>
+        </div>
+        <DarkField label="當地貨幣">
+          <button onClick={() => isAdmin && setShowCurrencyPicker('from')} disabled={fieldDisabled} className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl flex items-center gap-2 disabled:opacity-50">
+            <span className="text-xl">{fromCur?.flag}</span><span className="flex-1 text-left">{fromCur?.code} · {fromCur?.name}</span><IconChevron className="w-4 h-4 text-zinc-500" />
+          </button>
+        </DarkField>
+        <DarkField label="結算貨幣">
+          <button onClick={() => isAdmin && setShowCurrencyPicker('to')} disabled={fieldDisabled} className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl flex items-center gap-2 disabled:opacity-50">
+            <span className="text-xl">{toCur?.flag}</span><span className="flex-1 text-left">{toCur?.code} · {toCur?.name}</span><IconChevron className="w-4 h-4 text-zinc-500" />
+          </button>
+        </DarkField>
+        {currentRate && (
+          <div className="bg-orange-500/10 border border-orange-500/30 rounded-xl p-3">
+            <div className="text-xs text-orange-400">即時匯率 {currentRate.source && <span className="text-zinc-500 ml-1">({currentRate.source})</span>}</div>
+            <div className="text-white font-bold mt-0.5">1 {settings.fromCurrency} = {currentRate.rate.toFixed(6)} {settings.toCurrency}</div>
+            <div className="text-[10px] text-zinc-500 mt-0.5">更新於 {new Date(currentRate.timestamp).toLocaleString('zh-HK')}</div>
+          </div>
+        )}
+      </div>
+
+      {/* 旅伴 */}
+      <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4">
+        <div className="flex justify-between items-center mb-3">
+          <h2 className="text-sm font-medium text-zinc-400 uppercase tracking-wider flex items-center gap-2"><IconUsers className="w-3.5 h-3.5" /> 旅伴（{members.length}）</h2>
+          {isAdmin && <button onClick={() => setShowAddMember(true)} className="text-orange-500 text-sm font-medium flex items-center gap-1"><IconPlus className="w-4 h-4" /> 新增</button>}
+        </div>
+        {members.length === 0 ? <p className="text-sm text-zinc-500 text-center py-6">新增旅伴後，可以指派每筆消費由誰付、由誰分擔</p> : (
+          <div className="space-y-2">
+            {members.map(m => {
+              const isMe = m.id === me?.id;
+              return (
+                <div key={m.id} className="bg-zinc-900 rounded-xl p-3 space-y-2">
+                  <div className="flex items-center gap-3">
+                    <MemberAvatar member={m} size={36} />
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium truncate" style={{ color: ensureReadableColor(m.color) }}>
+                        {m.name}{isMe && <span className="ml-1 text-[10px] text-zinc-500">(我)</span>}
+                      </div>
+                      <div className="text-[10px] text-zinc-500">{ROLES[m.role || 'editor']?.name}</div>
+                    </div>
+                    {(isAdmin || isMe) && <button onClick={() => setEditingMember(m)} className="text-zinc-400 p-1.5"><IconPencil className="w-4 h-4" /></button>}
+                    {isAdmin && !isMe && <button onClick={() => handleDeleteMember(m.id)} className="text-zinc-400 p-1.5"><IconTrash className="w-4 h-4" /></button>}
+                  </div>
+                  {isAdmin && !isMe && (
+                    <div className="flex gap-1">
+                      {ROLE_ORDER.map(r => (
+                        <button key={r} onClick={() => setRole(m.id, r)} className={`flex-1 py-1.5 text-[11px] rounded-lg ${m.role === r || (!m.role && r === 'editor') ? 'bg-orange-500 text-white font-medium' : 'bg-zinc-800 text-zinc-500'}`}>{ROLES[r].name}</button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {isOwner && (
+        <button onClick={openInvite} className="w-full py-3 bg-zinc-950 border border-zinc-900 rounded-2xl flex items-center justify-between px-4 active:bg-zinc-900">
+          <span className="text-sm text-white flex items-center gap-2">📲 邀請連結 + QR code</span>
+          <IconChevron className="w-4 h-4 text-zinc-500" />
+        </button>
+      )}
+
+      {isOwner && <OwnerSecretCard />}
+
+      <button onClick={openActivity} className="w-full py-3 bg-zinc-950 border border-zinc-900 rounded-2xl flex items-center justify-between px-4 active:bg-zinc-900">
+        <span className="text-sm text-white flex items-center gap-2">📜 活動記錄</span>
+        <IconChevron className="w-4 h-4 text-zinc-500" />
+      </button>
+
+      <div className="bg-zinc-950 border border-zinc-900 rounded-2xl p-4 text-xs text-zinc-400 space-y-1">
+        <div className="text-orange-400 font-medium mb-1">💡 安裝到主畫面</div>
+        <div>iPhone：Safari → 分享 → <span className="text-white">加到主畫面</span></div>
+        <div>打開後全螢幕，同 App Store app 一樣。</div>
+      </div>
+
+      {shareToast && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-zinc-800 text-white text-sm px-4 py-2 rounded-full z-50 shadow-lg">{shareToast}</div>
+      )}
+
+      {(showAddMember || editingMember) && (
+        <MemberEditor member={editingMember} isOwner={isOwner} usedColors={members.filter(m => m.id !== editingMember?.id).map(m => m.color).filter(Boolean)} onClose={() => { setShowAddMember(false); setEditingMember(null); }}
+          onSave={(data) => {
+            if (editingMember) upsertMember({ ...editingMember, ...data });
+            else upsertMember({ ...data, role: 'editor' });
+            setShowAddMember(false); setEditingMember(null);
+          }} />
+      )}
+
+      {showCurrencyPicker && (
+        <CurrencyPicker current={showCurrencyPicker === 'from' ? settings.fromCurrency : settings.toCurrency}
+          title={showCurrencyPicker === 'from' ? '選擇當地貨幣' : '選擇結算貨幣'}
+          onClose={() => setShowCurrencyPicker(null)}
+          onSelect={(code) => {
+            const field = showCurrencyPicker === 'from' ? 'fromCurrency' : 'toCurrency';
+            writeTripMetaField(field, code);
+            setShowCurrencyPicker(null);
+          }} />
+      )}
+    </div>
+  );
+}
+
+function CurrencyPicker({ current, onSelect, onClose, title }) {
+  return (
+    <div className="fixed inset-0 bg-black/80 z-50 flex items-end backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-zinc-900 w-full rounded-t-3xl p-5 max-h-[80vh] overflow-y-auto border-t border-zinc-800 safe-bottom" onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-lg font-bold text-white">{title}</h2>
+          <button onClick={onClose} className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center"><IconX className="w-4 h-4 text-zinc-400" /></button>
+        </div>
+        <div className="space-y-1">
+          {CURRENCIES.map(c => (
+            <button key={c.code} onClick={() => onSelect(c.code)} className={`w-full flex items-center gap-3 p-3 rounded-xl ${current === c.code ? 'bg-orange-500/20 ring-1 ring-orange-500' : ''}`}>
+              <span className="text-2xl">{c.flag}</span>
+              <div className="flex-1 text-left"><div className="text-white font-medium">{c.code}</div><div className="text-xs text-zinc-500">{c.name}</div></div>
+              <span className="text-zinc-500">{c.symbol}</span>
+              {current === c.code && <IconCheck className="w-4 h-4 text-orange-500" />}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MemberEditor({ member, usedColors = [], onClose, onSave, isOwner }) {
+  const [name, setName] = useState(member?.name || '');
+  const [avatar, setAvatar] = useState(member?.avatar || '');
+  const [color, setColor] = useState(member?.color || PRESET_COLORS[0]);
+  const [ownerClaimed, setOwnerClaimed] = useState(!!member?.ownerClaimed);
+  const fileRef = useRef(null);
+  const usedSet = new Set(usedColors);
+
+  const handleAvatar = (file) => {
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const max = 240;
+        const size = Math.min(img.width, img.height);
+        const sx = (img.width - size) / 2;
+        const sy = (img.height - size) / 2;
+        canvas.width = max; canvas.height = max;
+        canvas.getContext('2d').drawImage(img, sx, sy, size, size, 0, 0, max, max);
+        setAvatar(canvas.toDataURL('image/jpeg', 0.75));
+      };
+      img.src = r.result;
+    };
+    r.readAsDataURL(file);
+  };
+
+  const handleSave = () => {
+    if (!name.trim()) { alert('請輸入名字'); return; }
+    if (usedSet.has(color)) { alert('呢個顏色已有人用，請揀另一個'); return; }
+    onSave({ name: name.trim(), avatar, color, ownerClaimed });
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/80 z-50 flex items-end backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-zinc-900 w-full rounded-t-3xl p-5 max-h-[92vh] overflow-y-auto border-t border-zinc-800 safe-bottom" onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-5">
+          <h2 className="text-xl font-bold text-white">{member ? '編輯旅伴' : '新增旅伴'}</h2>
+          <button onClick={onClose} className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center"><IconX className="w-4 h-4 text-zinc-400" /></button>
+        </div>
+        <div className="space-y-4">
+          <div className="flex justify-center">
+            <button onClick={() => fileRef.current?.click()} className="relative">
+              {avatar ? (
+                <img src={avatar} className="w-24 h-24 rounded-full object-cover ring-4 ring-zinc-800" alt="" />
+              ) : (
+                <div className="w-24 h-24 rounded-full flex items-center justify-center text-4xl font-bold text-white ring-4 ring-zinc-800" style={{ backgroundColor: color }}>{name[0] || '?'}</div>
+              )}
+              <div className="absolute bottom-0 right-0 w-8 h-8 bg-orange-500 rounded-full flex items-center justify-center shadow-lg"><IconCamera className="w-4 h-4 text-white" /></div>
+            </button>
+            <input ref={fileRef} type="file" accept="image/*" onChange={e => handleAvatar(e.target.files?.[0])} className="hidden" />
+          </div>
+          <p className="text-center text-[10px] text-zinc-500">點擊更換頭像</p>
+          <DarkField label="名字"><input value={name} onChange={e => setName(e.target.value)} placeholder="例如：Ricky" className="w-full px-4 py-3 bg-zinc-800 text-white rounded-xl outline-none focus:ring-2 ring-orange-500" /></DarkField>
+          <DarkField label="顏色（用喺名字、活動記錄）">
+            <div className="flex gap-2 flex-wrap">
+              {PRESET_COLORS.map(c => {
+                const used = usedSet.has(c);
+                return (
+                  <button key={c} onClick={() => setColor(c)} className={`relative w-10 h-10 rounded-full transition ${color === c ? 'ring-2 ring-white scale-110' : ''} ${used && color !== c ? 'opacity-40' : ''}`} style={{ backgroundColor: c }}>
+                    {used && color !== c && <span className="absolute -top-1 -right-1 text-[8px] bg-zinc-800 text-zinc-400 rounded-full px-1">已用</span>}
+                  </button>
+                );
+              })}
+              {/* color picker */}
+              <label className="relative w-10 h-10 rounded-full border-2 border-dashed border-zinc-600 flex items-center justify-center cursor-pointer overflow-hidden">
+                <input type="color" value={color} onChange={e => setColor(e.target.value)} className="absolute inset-0 opacity-0 cursor-pointer" />
+                <span className="text-zinc-500 text-xs">+</span>
+              </label>
+            </div>
+            <div className="text-[10px] text-zinc-500 mt-1">當前：<span style={{ color: ensureReadableColor(color) }}>{name || '名字預覽'}</span></div>
+          </DarkField>
+          {avatar && <button onClick={() => setAvatar('')} className="w-full py-2 text-sm text-zinc-400 bg-zinc-800 rounded-xl">移除頭像</button>}
+          {isOwner && (
+            <button onClick={() => setOwnerClaimed(v => !v)} className={`w-full py-3 px-4 rounded-xl text-sm text-left flex items-center justify-between ${ownerClaimed ? 'bg-orange-500/10 border border-orange-500/50 text-orange-300' : 'bg-zinc-800 text-zinc-400'}`}>
+              <span className="flex items-center gap-2">🔒 鎖住呢個身分（只 Owner 可揀）</span>
+              <span className={`w-10 h-6 rounded-full relative transition ${ownerClaimed ? 'bg-orange-500' : 'bg-zinc-700'}`}>
+                <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition ${ownerClaimed ? 'left-[22px]' : 'left-0.5'}`}></span>
+              </span>
+            </button>
+          )}
+          <button onClick={handleSave} className="w-full py-4 bg-gradient-to-br from-orange-400 to-orange-600 text-white font-bold rounded-2xl shadow-lg shadow-orange-500/20">儲存</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ========== Error Boundary ==========
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null, info: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, info) {
+    this.setState({ error, info });
+    console.error('ErrorBoundary caught:', error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: '60px 20px 40px', background: '#000', color: '#fff', fontFamily: 'monospace', fontSize: 12, minHeight: '100vh', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          <div style={{ color: '#FF8C00', fontSize: 14, fontWeight: 'bold', marginBottom: 12 }}>⚠️ 渲染錯誤</div>
+          <div style={{ marginBottom: 12 }}>{String(this.state.error?.message || this.state.error)}</div>
+          <div style={{ color: '#888', fontSize: 10, marginBottom: 12 }}>{this.state.error?.stack || ''}</div>
+          <div style={{ color: '#888', fontSize: 10, marginBottom: 12 }}>{this.state.info?.componentStack || ''}</div>
+          <button onClick={() => { window.location.hash = '#/'; window.location.reload(); }} style={{ marginTop: 12, padding: '8px 16px', background: '#FF8C00', color: '#fff', border: 'none', borderRadius: 8 }}>返旅程列表 + 重載</button>
+          <button onClick={() => { Object.keys(localStorage).filter(k => k.startsWith('identity:')).forEach(k => localStorage.removeItem(k)); window.location.hash = '#/'; window.location.reload(); }} style={{ marginTop: 12, marginLeft: 8, padding: '8px 16px', background: '#333', color: '#fff', border: 'none', borderRadius: 8 }}>清除身分 + 重載</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// ========== 啟動 ==========
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<ErrorBoundary><App /></ErrorBoundary>);
+</script>
+</body>
+</html>
